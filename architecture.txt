@@ -1,0 +1,36 @@
+             MIZO CLOUD / SERVER
+ ┌─────────────────────────────────────┐
+ │  Admin Dashboard                    │
+ │  • AI behavior/rules                │
+ │  • API keys                         │
+ │  • Student data                     │
+ │  • Conversation history             │
+ │  • Knowledge/PDFs                   │
+ │  • AI provider selection             │
+ ├─────────────────────────────────────┤
+ │  FastAPI Backend                    │
+ │  • Speech-to-Text                   │
+ │  • RAG / knowledge                  │
+ │  • Personalization                  │
+ │  • Groq / OpenAI / Qwen             │
+ │  • Text-to-Speech                   │
+ ├─────────────────────────────────────┤
+ │  Database + Storage                 │
+ └─────────────────────────────────────┘
+                 ▲
+                 │ Wi-Fi / HTTPS
+                 ▼
+            ESP32-S3
+        🎤 INMP441 microphone
+                 │
+                 ▼
+             MIZO Cloud
+                 │
+                 ▼
+             Audio response
+                 │
+                 ▼
+        ESP32-S3 → MAX98357A
+                 │
+                 ▼
+             🔊 Speaker2

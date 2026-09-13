@@ -1,0 +1,48 @@
+Project Title
+Mikaza / Mizo — An AI-Powered Personalized Learning and Communication Tutor
+
+Problem Statement
+Traditional online learning platforms primarily provide static educational content and lack personalized interaction. Students often struggle with communication skills, public speaking, subject understanding, and consistent learning motivation. Existing AI chatbots also have limited memory, weak personalization, and often fail to provide continuous guidance based on a student's individual progress.
+
+There is a need for an intelligent AI tutor capable of engaging in natural conversations, remembering user progress, assessing communication skills, and providing personalized learning experiences.
+
+Proposed Solution
+Mikaza is an AI-powered educational assistant that combines speech recognition, artificial intelligence, natural language processing, and long-term memory to create a personalized learning environment.
+
+The system allows students to communicate naturally through voice, receive real-time feedback on communication skills, learn academic subjects interactively, practice speeches and presentations, and monitor their overall learning progress through personalized assessments.
+
+Unlike traditional chatbots, Mikaza continuously adapts to each student's goals, strengths, weaknesses, and learning history.
+
+Objectives
+- Develop an AI-powered personalized learning assistant.
+- Improve students' English communication and speaking confidence.
+- Provide AI-based subject tutoring across multiple academic domains.
+- Assess grammar, vocabulary, fluency, and communication skills.
+- Enable speech and presentation practice with AI feedback.
+- Maintain long-term memory of each student's learning progress.
+- Deliver personalized learning recommendations based on performance.
+
+Novelty / Innovation
+The key innovations include:
+- AI-driven personalized tutoring instead of predefined responses.
+- Long-term memory for individualized learning experiences.
+- Voice-based interaction using Whisper speech recognition.
+- Dynamic communication assessment powered by Large Language Models (LLMs).
+- AI-generated follow-up questions and adaptive conversations.
+- Integration of multiple learning modes including communication coaching, subject tutoring, and speech training within a single intelligent assistant.
+
+Methodology / Technology
+The project follows a modular AI architecture consisting of:
+- Technologies: Python, FastAPI, Faster-Whisper / Groq Whisper, Large Language Models (LLMs: Groq, OpenAI, Qwen), TTS (Edge-TTS / gTTS / Pyttsx3), RAG Vector Store, SQLite / JSON / SQLAlchemy Memory System.
+- Development Methodology: User Onboarding, Voice Detection, Speech Recognition, AI Understanding, Personalized Response Generation, Memory Update, Progress Tracking, Continuous Learning.
+- Core Modules: Voice Engine, Memory Engine, AI Engine, Communication Coach, Subject Tutor, Speech Coach, Progress Tracking System, Admin Dashboard.
+
+Expected Outcomes
+Upon completion, Mikaza / Mizo will:
+- Provide natural voice-based conversations.
+- Improve students' English communication abilities.
+- Deliver personalized subject tutoring.
+- Evaluate speech and presentation performance.
+- Maintain learning history and progress records.
+- Offer adaptive study recommendations based on previous interactions.
+- Enhance overall student engagement through AI-powered learning.

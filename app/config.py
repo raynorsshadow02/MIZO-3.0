@@ -1,0 +1,59 @@
+import os
+from pathlib import Path
+from typing import Optional
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    from pydantic import BaseModel as BaseSettings  # fallback
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+
+
+class Settings(BaseSettings):
+    APP_NAME: str = "Mizo 3.0 Cloud Server"
+    ENVIRONMENT: str = "development"
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+    LOG_LEVEL: str = "INFO"
+
+    # Storage Paths
+    DATA_DIR: Path = BASE_DIR / "data"
+    UPLOAD_DIR: Path = BASE_DIR / "data" / "uploads"
+    AUDIO_CACHE_DIR: Path = BASE_DIR / "data" / "audio_cache"
+    DATABASE_PATH: Path = BASE_DIR / "data" / "mizo.db"
+
+    # Default AI Settings
+    DEFAULT_AI_PROVIDER: str = "groq"
+    GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY", "")
+    OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY", "")
+    QWEN_API_KEY: Optional[str] = os.getenv("QWEN_API_KEY", "")
+    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    QWEN_MODEL: str = os.getenv("QWEN_MODEL", "qwen/qwen-2.5-72b-instruct")
+    GROQ_WHISPER_MODEL: str = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3")
+
+    # TTS Settings
+    DEFAULT_TTS_VOICE: str = os.getenv("DEFAULT_TTS_VOICE", "en-US-GuyNeural")
+    DEFAULT_TTS_RATE: str = os.getenv("DEFAULT_TTS_RATE", "+0%")
+    DEFAULT_TTS_PITCH: str = os.getenv("DEFAULT_TTS_PITCH", "+0Hz")
+
+    # Hardware & Device Settings
+    DEFAULT_DEVICE_KEY: str = os.getenv("DEFAULT_DEVICE_KEY", "mizo_esp32_secret_key_123")
+    AUDIO_SAMPLE_RATE: int = 16000  # 16kHz audio for ESP32 INMP441 & MAX98357A
+    AUDIO_CHANNELS: int = 1         # Mono
+
+    class Config:
+        env_file = ".env"
+        extra = "allow"
+
+
+settings = Settings()
+
+# Ensure directories exist
+settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
+settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+settings.AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)

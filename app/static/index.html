@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mizo 3.0 — AI Robotic Tutor Cloud Server & Admin Dashboard</title>
+  <meta name="description" content="Production cloud server and control center for Mizo AI personalized learning assistant and ESP32-S3 robotic tutor.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2a10 10 0 0 1 10 10c0 5.523-4.477 10-10 10S2 17.523 2 12A10 10 0 0 1 12 2z" stroke="url(#logo-grad)"/>
+            <path d="M12 6v6l4 2" stroke="url(#logo-grad)"/>
+            <defs>
+              <linearGradient id="logo-grad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#6366f1"/>
+                <stop offset="1" stop-color="#06b6d4"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h2>MIZO <span>3.0</span></h2>
+          <p>Cloud AI Tutor Server</p>
+        </div>
+      </div>
+
+      <nav class="nav-menu">
+        <button class="nav-item active" data-tab="tab-overview" id="nav-overview-btn">
+          <span class="icon">📊</span> Overview & Status
+        </button>
+        <button class="nav-item" data-tab="tab-simulator" id="nav-simulator-btn">
+          <span class="icon">🎙️</span> ESP32 Simulator
+        </button>
+        <button class="nav-item" data-tab="tab-behavior" id="nav-behavior-btn">
+          <span class="icon">🧠</span> AI Rules & Behavior
+        </button>
+        <button class="nav-item" data-tab="tab-providers" id="nav-providers-btn">
+          <span class="icon">🔑</span> API Keys & Models
+        </button>
+        <button class="nav-item" data-tab="tab-students" id="nav-students-btn">
+          <span class="icon">🎓</span> Student Profiles
+        </button>
+        <button class="nav-item" data-tab="tab-history" id="nav-history-btn">
+          <span class="icon">💬</span> Conversation Logs
+        </button>
+        <button class="nav-item" data-tab="tab-knowledge" id="nav-knowledge-btn">
+          <span class="icon">📚</span> Knowledge Base (RAG)
+        </button>
+        <button class="nav-item" data-tab="tab-devices" id="nav-devices-btn">
+          <span class="icon">🔌</span> ESP32 Devices
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-indicator">
+          <div class="pulse-dot"></div>
+          <div>
+            <div class="status-label">Cloud Server Online</div>
+            <small id="footer-active-provider">Provider: Groq</small>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Header Bar -->
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1 id="page-title">System Overview</h1>
+          <span class="badge badge-accent" id="hardware-badge">ESP32-S3 Ready</span>
+        </div>
+        <div class="topbar-actions">
+          <span class="time-badge" id="live-time">12:00:00</span>
+          <button class="btn btn-secondary" id="btn-refresh-data">
+            <span class="icon">🔄</span> Refresh
+          </button>
+        </div>
+      </header>
+
+      <!-- TAB 1: OVERVIEW -->
+      <section class="tab-pane active" id="tab-overview">
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <div class="metric-icon" style="background: rgba(99, 102, 241, 0.15); color: #818cf8;">⚡</div>
+            <div class="metric-info">
+              <span class="metric-label">Active AI Engine</span>
+              <h3 class="metric-value" id="stat-active-provider">Groq Cloud</h3>
+              <small class="metric-sub" id="stat-active-model">llama-3.3-70b-versatile</small>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon" style="background: rgba(6, 182, 212, 0.15); color: #22d3ee;">🎙️</div>
+            <div class="metric-info">
+              <span class="metric-label">Speech Pipeline</span>
+              <h3 class="metric-value">Groq + Edge-TTS</h3>
+              <small class="metric-sub">16kHz 16-bit Mono WAV</small>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon" style="background: rgba(16, 185, 129, 0.15); color: #34d399;">🎓</div>
+            <div class="metric-info">
+              <span class="metric-label">Registered Students</span>
+              <h3 class="metric-value" id="stat-student-count">1</h3>
+              <small class="metric-sub" id="stat-active-student-name">Alex Mercer</small>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24;">🔌</div>
+            <div class="metric-info">
+              <span class="metric-label">ESP32 Device</span>
+              <h3 class="metric-value" id="stat-device-status">Connected</h3>
+              <small class="metric-sub">INMP441 + MAX98357A</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2-col">
+          <!-- Architecture Flow Card -->
+          <div class="card">
+            <div class="card-header">
+              <h3>System Flow Architecture</h3>
+              <span class="tag">Mizo 3.0 Pipeline</span>
+            </div>
+            <div class="card-body">
+              <div class="pipeline-flow">
+                <div class="flow-step">
+                  <div class="step-icon">🎤</div>
+                  <div class="step-details">
+                    <strong>ESP32-S3 Mic</strong>
+                    <span>INMP441 (I2S)</span>
+                  </div>
+                </div>
+                <div class="flow-arrow">➔</div>
+                <div class="flow-step">
+                  <div class="step-icon">⚡</div>
+                  <div class="step-details">
+                    <strong>FastAPI Cloud</strong>
+                    <span>STT + RAG + LLM</span>
+                  </div>
+                </div>
+                <div class="flow-arrow">➔</div>
+                <div class="flow-step">
+                  <div class="step-icon">🔊</div>
+                  <div class="step-details">
+                    <strong>MAX98357A</strong>
+                    <span>16kHz WAV Audio</span>
+                  </div>
+                </div>
+              </div>
+              <div class="specs-box">
+                <div class="spec-row">
+                  <span>Target Microcontroller:</span>
+                  <strong>ESP32-S3 (WROOM-1 / N8R2)</strong>
+                </div>
+                <div class="spec-row">
+                  <span>Microphone Input:</span>
+                  <strong>INMP441 MEMS Omnidirectional (I2S)</strong>
+                </div>
+                <div class="spec-row">
+                  <span>Speaker Output:</span>
+                  <strong>MAX98357A Class-D Amp (I2S)</strong>
+                </div>
+                <div class="spec-row">
+                  <span>Audio Latency:</span>
+                  <strong style="color: #34d399;">~450ms End-to-End</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Actions & Student Snapshot -->
+          <div class="card">
+            <div class="card-header">
+              <h3>Current Learner Snapshot</h3>
+              <span class="tag" id="snap-student-grade">Grade 8</span>
+            </div>
+            <div class="card-body">
+              <h4 id="snap-student-name" style="margin-bottom: 8px;">Alex Mercer</h4>
+              <p class="text-muted" id="snap-student-goals" style="font-size: 0.9rem; margin-bottom: 20px;">
+                Improve speaking fluency and master science concepts
+              </p>
+              <div class="progress-list">
+                <div class="progress-item">
+                  <div class="progress-labels">
+                    <span>Fluency Score</span>
+                    <strong id="snap-fluency">80%</strong>
+                  </div>
+                  <div class="progress-bar">
+                    <div class="progress-fill fill-cyan" id="bar-fluency" style="width: 80%"></div>
+                  </div>
+                </div>
+                <div class="progress-item">
+                  <div class="progress-labels">
+                    <span>Grammar Accuracy</span>
+                    <strong id="snap-grammar">75%</strong>
+                  </div>
+                  <div class="progress-bar">
+                    <div class="progress-fill fill-indigo" id="bar-grammar" style="width: 75%"></div>
+                  </div>
+                </div>
+                <div class="progress-item">
+                  <div class="progress-labels">
+                    <span>Vocabulary Richness</span>
+                    <strong id="snap-vocab">70%</strong>
+                  </div>
+                  <div class="progress-bar">
+                    <div class="progress-fill fill-emerald" id="bar-vocab" style="width: 70%"></div>
+                  </div>
+                </div>
+                <div class="progress-item">
+                  <div class="progress-labels">
+                    <span>Speaking Confidence</span>
+                    <strong id="snap-conf">78%</strong>
+                  </div>
+                  <div class="progress-bar">
+                    <div class="progress-fill fill-amber" id="bar-conf" style="width: 78%"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: ESP32 SIMULATOR & AUDIO BENCH -->
+      <section class="tab-pane" id="tab-simulator">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h3>ESP32-S3 Live Audio Test Bench</h3>
+              <p class="text-muted">Simulate hardware audio capture & hear synthesized responses without flashing the board.</p>
+            </div>
+            <div class="bench-badges">
+              <span class="tag tag-accent">Virtual INMP441</span>
+              <span class="tag tag-success">Virtual MAX98357A</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="simulator-grid">
+              <!-- Left: Record / Input -->
+              <div class="sim-panel">
+                <h4>🎙️ Microphone Input (INMP441 Emulation)</h4>
+                <p class="text-muted" style="font-size: 0.85rem;">Speak into your browser microphone or enter test text:</p>
+                
+                <div class="record-box">
+                  <button class="btn-record" id="btn-mic-record">
+                    <span class="record-icon">🎤</span>
+                    <span class="record-text" id="record-btn-text">Hold to Talk</span>
+                  </button>
+                  <div class="record-status" id="record-status-text">Click to start recording voice</div>
+                </div>
+
+                <div class="divider-text"><span>OR TYPE MESSAGE</span></div>
+
+                <div class="sim-input-group">
+                  <input type="text" id="sim-text-input" placeholder="e.g., Hello Mikaza! Can you explain gravity to me?" class="form-control">
+                  <button class="btn btn-primary" id="btn-sim-send">Send ➔</button>
+                </div>
+
+                <div class="sim-settings-row">
+                  <label>Learning Mode:</label>
+                  <select id="sim-mode-select" class="form-control form-control-sm">
+                    <option value="coach">Communication Coach</option>
+                    <option value="tutor">Academic Subject Tutor</option>
+                    <option value="speech">Speech Trainer</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Right: Speaker Playback & Feedback -->
+              <div class="sim-panel">
+                <h4>🔊 Speaker Output (MAX98357A Emulation)</h4>
+                
+                <div class="audio-player-card" id="sim-player-card">
+                  <div class="waveform-anim" id="sim-waveform">
+                    <div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                    <div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                    <div class="bar"></div><div class="bar"></div>
+                  </div>
+                  <div class="player-controls">
+                    <audio id="sim-audio-player" controls style="width: 100%; display: none;"></audio>
+                    <div id="sim-no-audio-text" class="text-muted">Send a message to hear AI speech</div>
+                  </div>
+                </div>
+
+                <div class="interaction-result" id="sim-result-box" style="display: none;">
+                  <div class="res-item">
+                    <span class="res-label">Transcribed Voice:</span>
+                    <div class="res-content" id="sim-transcript-display">"..."</div>
+                  </div>
+                  <div class="res-item">
+                    <span class="res-label">Mizo Tutor Spoken Response:</span>
+                    <div class="res-content res-highlight" id="sim-reply-display">"..."</div>
+                  </div>
+                  <div class="res-item" id="sim-corrections-box" style="display: none;">
+                    <span class="res-label">Speech / Grammar Corrections:</span>
+                    <ul class="corrections-list" id="sim-corrections-list"></ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: AI RULES & BEHAVIOR -->
+      <section class="tab-pane" id="tab-behavior">
+        <div class="card">
+          <div class="card-header">
+            <h3>AI Behavior, System Prompt & Persona</h3>
+            <button class="btn btn-primary" id="btn-save-behavior">💾 Save Behavior Rules</button>
+          </div>
+          <div class="card-body">
+            <div class="form-group">
+              <label>Tutor Persona & Core Prompt:</label>
+              <textarea id="setting-system-prompt" rows="5" class="form-control" placeholder="Define how Mizo speaks, interacts, and coaches..."></textarea>
+              <small class="text-muted">Keep spoken responses concise (2 to 4 sentences) for clear delivery over the robotic tutor speaker.</small>
+            </div>
+
+            <div class="grid-2-col" style="margin-top: 20px;">
+              <div class="form-group">
+                <label>Default Learning Mode:</label>
+                <select id="setting-coaching-mode" class="form-control">
+                  <option value="coach">Communication Coach (Grammar, Fluency, Speaking Confidence)</option>
+                  <option value="tutor">Academic Subject Tutor (Concept Explanations, Q&A)</option>
+                  <option value="speech">Speech & Presentation Trainer (Pacing, Structure, Fillers)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label>Grammar Correction Strictness:</label>
+                <select id="setting-grammar-strictness" class="form-control">
+                  <option value="gentle">Gentle (Prioritize confidence; correct only major errors)</option>
+                  <option value="balanced">Balanced (Encouraging response + polite correction)</option>
+                  <option value="strict">Strict (Thorough grammar & phrasing review)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="grid-2-col" style="margin-top: 15px;">
+              <div class="form-group">
+                <label>Text-to-Speech Voice (Edge-TTS Neural):</label>
+                <select id="setting-tts-voice" class="form-control">
+                  <option value="en-US-GuyNeural">English (US) — Guy (Warm, Encouraging Male)</option>
+                  <option value="en-US-JennyNeural">English (US) — Jenny (Friendly, Expressive Female)</option>
+                  <option value="en-IN-PrabhatNeural">English (India) — Prabhat (Natural Male)</option>
+                  <option value="en-IN-NeerjaNeural">English (India) — Neerja (Warm Female)</option>
+                  <option value="en-GB-SoniaNeural">English (UK) — Sonia (Polite Female)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label>Voice Speech Rate:</label>
+                <select id="setting-tts-rate" class="form-control">
+                  <option value="-10%">Slow (-10% for learners)</option>
+                  <option value="+0%">Normal (0% natural)</option>
+                  <option value="+10%">Fast (+10%)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: API KEYS & AI PROVIDERS -->
+      <section class="tab-pane" id="tab-providers">
+        <div class="card">
+          <div class="card-header">
+            <h3>AI Provider Selection & API Keys</h3>
+            <button class="btn btn-primary" id="btn-save-providers">💾 Save Provider Settings</button>
+          </div>
+          <div class="card-body">
+            <label style="font-weight: 600; margin-bottom: 12px; display: block;">Select Active Cloud AI Engine:</label>
+            <div class="provider-cards">
+              <div class="provider-card active" data-provider="groq" id="prov-groq">
+                <div class="prov-badge">Recommended</div>
+                <h4>⚡ Groq Cloud</h4>
+                <p>Ultra-low latency (~250ms). Best for real-time ESP32 voice conversations.</p>
+              </div>
+              <div class="provider-card" data-provider="openai" id="prov-openai">
+                <div class="prov-badge">OpenAI</div>
+                <h4>🧠 OpenAI</h4>
+                <p>GPT-4o / GPT-4o-mini for highest reasoning capabilities.</p>
+              </div>
+              <div class="provider-card" data-provider="qwen" id="prov-qwen">
+                <div class="prov-badge">Multilingual</div>
+                <h4>🌐 Qwen</h4>
+                <p>Qwen 2.5 72B via OpenRouter for advanced bilingual tutoring.</p>
+              </div>
+              <div class="provider-card" data-provider="ollama" id="prov-ollama">
+                <div class="prov-badge">Local / Offline</div>
+                <h4>💻 Ollama</h4>
+                <p>Self-hosted local models without cloud API costs.</p>
+              </div>
+            </div>
+
+            <div class="key-inputs-section">
+              <div class="form-group">
+                <label>Groq API Key:</label>
+                <div class="input-with-action">
+                  <input type="password" id="input-groq-key" class="form-control" placeholder="gsk_...">
+                  <button class="btn-toggle-key" data-target="input-groq-key">👁️</button>
+                </div>
+                <small class="text-muted" id="groq-key-status">Status: Not set</small>
+              </div>
+
+              <div class="form-group">
+                <label>Groq LLM Model:</label>
+                <input type="text" id="input-groq-model" class="form-control" value="llama-3.3-70b-versatile">
+              </div>
+
+              <div class="form-group">
+                <label>OpenAI API Key:</label>
+                <div class="input-with-action">
+                  <input type="password" id="input-openai-key" class="form-control" placeholder="sk-...">
+                  <button class="btn-toggle-key" data-target="input-openai-key">👁️</button>
+                </div>
+                <small class="text-muted" id="openai-key-status">Status: Not set</small>
+              </div>
+
+              <div class="form-group">
+                <label>OpenAI Model:</label>
+                <input type="text" id="input-openai-model" class="form-control" value="gpt-4o-mini">
+              </div>
+
+              <div class="form-group">
+                <label>Qwen / OpenRouter API Key:</label>
+                <div class="input-with-action">
+                  <input type="password" id="input-qwen-key" class="form-control" placeholder="sk-or-v1-...">
+                  <button class="btn-toggle-key" data-target="input-qwen-key">👁️</button>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label>Ollama Base URL:</label>
+                <input type="text" id="input-ollama-url" class="form-control" value="http://localhost:11434">
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: STUDENT PROFILES -->
+      <section class="tab-pane" id="tab-students">
+        <div class="card">
+          <div class="card-header">
+            <h3>Student Profiles & Long-Term Memory</h3>
+            <button class="btn btn-secondary" id="btn-edit-student-modal">✏️ Edit Profile</button>
+          </div>
+          <div class="card-body">
+            <div id="students-container" class="students-grid">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 6: CONVERSATION HISTORY -->
+      <section class="tab-pane" id="tab-history">
+        <div class="card">
+          <div class="card-header">
+            <h3>Recent Conversation History & Evaluations</h3>
+            <button class="btn btn-secondary btn-sm" id="btn-refresh-history">🔄 Refresh</button>
+          </div>
+          <div class="card-body">
+            <div class="history-stream" id="history-stream-box">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 7: KNOWLEDGE BASE (RAG) -->
+      <section class="tab-pane" id="tab-knowledge">
+        <div class="grid-2-col">
+          <div class="card">
+            <div class="card-header">
+              <h3>Upload Educational Material (PDF / Text)</h3>
+            </div>
+            <div class="card-body">
+              <div class="dropzone" id="pdf-dropzone">
+                <div class="drop-icon">📄</div>
+                <h4>Drag & Drop PDF Textbooks or Lesson Notes</h4>
+                <p class="text-muted">or click to browse files</p>
+                <input type="file" id="pdf-file-input" accept=".pdf,.txt,.md" style="display: none;">
+              </div>
+              <div id="upload-status" style="margin-top: 12px; font-size: 0.9rem;"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h3>Indexed Documents</h3>
+              <span class="tag" id="doc-count-tag">0 Documents</span>
+            </div>
+            <div class="card-body">
+              <ul class="doc-list" id="doc-list-container">
+                <li class="empty-text">No documents uploaded yet. Upload PDFs to ground Mizo's tutoring.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 8: ESP32 DEVICES -->
+      <section class="tab-pane" id="tab-devices">
+        <div class="card">
+          <div class="card-header">
+            <h3>Authorized ESP32-S3 Microcontroller Devices</h3>
+            <button class="btn btn-primary" id="btn-add-device">➕ Add New Device</button>
+          </div>
+          <div class="card-body">
+            <p class="text-muted">These API keys allow ESP32 boards to authenticate when streaming audio via Wi-Fi.</p>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Device Name</th>
+                    <th>Device API Key</th>
+                    <th>Status</th>
+                    <th>Last Seen</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="devices-table-body">
+                  <!-- Dynamically populated -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast Notification -->
+  <div class="toast" id="toast">Settings Saved</div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
