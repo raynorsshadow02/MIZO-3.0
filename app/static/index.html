@@ -34,23 +34,23 @@
       </div>
 
       <nav class="nav-menu">
-        <button class="nav-item active" data-tab="tab-overview" id="nav-overview-btn">
+        <button class="nav-item active" data-tab="tab-simulator" id="nav-simulator-btn">
+          <span class="icon">🎙️</span> Onboarding & Voice Chat
+        </button>
+        <button class="nav-item" data-tab="tab-overview" id="nav-overview-btn">
           <span class="icon">📊</span> Overview & Status
         </button>
-        <button class="nav-item" data-tab="tab-simulator" id="nav-simulator-btn">
-          <span class="icon">🎙️</span> ESP32 Simulator
+        <button class="nav-item" data-tab="tab-students" id="nav-students-btn">
+          <span class="icon">🎓</span> Learner Profile & Baseline
+        </button>
+        <button class="nav-item" data-tab="tab-history" id="nav-history-btn">
+          <span class="icon">💬</span> Conversation History
         </button>
         <button class="nav-item" data-tab="tab-behavior" id="nav-behavior-btn">
           <span class="icon">🧠</span> AI Rules & Behavior
         </button>
         <button class="nav-item" data-tab="tab-providers" id="nav-providers-btn">
-          <span class="icon">🔑</span> API Keys & Models
-        </button>
-        <button class="nav-item" data-tab="tab-students" id="nav-students-btn">
-          <span class="icon">🎓</span> Student Profiles
-        </button>
-        <button class="nav-item" data-tab="tab-history" id="nav-history-btn">
-          <span class="icon">💬</span> Conversation Logs
+          <span class="icon">🔑</span> API Keys & AI Cascade
         </button>
         <button class="nav-item" data-tab="tab-knowledge" id="nav-knowledge-btn">
           <span class="icon">📚</span> Knowledge Base (RAG)
@@ -64,8 +64,8 @@
         <div class="status-indicator">
           <div class="pulse-dot"></div>
           <div>
-            <div class="status-label">Cloud Server Online</div>
-            <small id="footer-active-provider">Provider: Groq</small>
+            <div class="status-label">Mizo Cloud Online</div>
+            <small id="footer-active-provider">Primary: Groq Llama 3.3</small>
           </div>
         </div>
       </div>
@@ -76,155 +76,162 @@
       <!-- Header Bar -->
       <header class="topbar">
         <div class="topbar-title">
-          <h1 id="page-title">System Overview</h1>
-          <span class="badge badge-accent" id="hardware-badge">ESP32-S3 Ready</span>
+          <h1 id="page-title">Onboarding & Voice Chat</h1>
+          <span class="badge badge-accent" id="hardware-badge">Primary: Llama 3.3 70B</span>
         </div>
         <div class="topbar-actions">
+          <button class="btn btn-primary btn-sm" id="btn-global-new-session" title="Start new session and preserve all profile/history">
+            <span class="icon">⚡</span> New Session
+          </button>
+          <button class="btn btn-secondary btn-sm" id="btn-restart-onboarding" title="Archive current profile snapshot and start fresh onboarding from Step 1">
+            <span class="icon">🔄</span> Restart Onboarding
+          </button>
+          <button class="btn btn-secondary btn-sm" id="btn-delete-learner-data" style="color: #f43f5e;" title="Permanently delete learner profile & history while preserving API keys">
+            <span class="icon">🗑️</span> Delete Learner Data
+          </button>
           <span class="time-badge" id="live-time">12:00:00</span>
-          <button class="btn btn-secondary" id="btn-refresh-data">
+          <button class="btn btn-secondary btn-sm" id="btn-refresh-data">
             <span class="icon">🔄</span> Refresh
           </button>
         </div>
       </header>
 
       <!-- TAB 1: OVERVIEW -->
-      <section class="tab-pane active" id="tab-overview">
+      <section class="tab-pane" id="tab-overview">
         <div class="metrics-grid">
           <div class="metric-card">
             <div class="metric-icon" style="background: rgba(99, 102, 241, 0.15); color: #818cf8;">⚡</div>
             <div class="metric-info">
-              <span class="metric-label">Active AI Engine</span>
-              <h3 class="metric-value" id="stat-active-provider">Groq Cloud</h3>
-              <small class="metric-sub" id="stat-active-model">llama-3.3-70b-versatile</small>
+              <span class="metric-label">Primary LLM</span>
+              <h3 class="metric-value" id="stat-active-provider">Llama 3.3 70B</h3>
+              <small class="metric-sub" id="stat-active-model">Groq Cloud (Fallback Enabled)</small>
             </div>
           </div>
           <div class="metric-card">
             <div class="metric-icon" style="background: rgba(6, 182, 212, 0.15); color: #22d3ee;">🎙️</div>
             <div class="metric-info">
-              <span class="metric-label">Speech Pipeline</span>
-              <h3 class="metric-value">Groq + Edge-TTS</h3>
-              <small class="metric-sub">16kHz 16-bit Mono WAV</small>
+              <span class="metric-label">Voice Pipeline</span>
+              <h3 class="metric-value">Whisper + Edge-TTS</h3>
+              <small class="metric-sub">16kHz 16-bit Mono WAV (ESP32 I2S)</small>
             </div>
           </div>
           <div class="metric-card">
             <div class="metric-icon" style="background: rgba(16, 185, 129, 0.15); color: #34d399;">🎓</div>
             <div class="metric-info">
-              <span class="metric-label">Registered Students</span>
-              <h3 class="metric-value" id="stat-student-count">1</h3>
-              <small class="metric-sub" id="stat-active-student-name">Alex Mercer</small>
+              <span class="metric-label">Learner Profile</span>
+              <h3 class="metric-value" id="stat-active-student-name">Alex Mercer</h3>
+              <small class="metric-sub" id="stat-student-onboarding-status">Onboarding: Complete</small>
             </div>
           </div>
           <div class="metric-card">
             <div class="metric-icon" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24;">🔌</div>
             <div class="metric-info">
-              <span class="metric-label">ESP32 Device</span>
-              <h3 class="metric-value" id="stat-device-status">Connected</h3>
-              <small class="metric-sub">INMP441 + MAX98357A</small>
+              <span class="metric-label">Active Session</span>
+              <h3 class="metric-value" id="stat-active-session-id">ses_active</h3>
+              <small class="metric-sub" id="stat-session-msg-count">0 messages</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Provider Health Strip -->
+        <div class="card" style="margin-bottom: 24px;">
+          <div class="card-header">
+            <h3>API Provider Health & Cascade Status</h3>
+            <button class="btn btn-secondary btn-sm" id="btn-test-providers">⚡ Test All Connections</button>
+          </div>
+          <div class="card-body">
+            <div class="provider-status-strip" id="provider-status-container">
+              <!-- Dynamically populated -->
+              <div class="text-muted">Testing provider connectivity...</div>
             </div>
           </div>
         </div>
 
         <div class="grid-2-col">
-          <!-- Architecture Flow Card -->
+          <!-- Current Session Metrics Card -->
           <div class="card">
             <div class="card-header">
-              <h3>System Flow Architecture</h3>
-              <span class="tag">Mizo 3.0 Pipeline</span>
+              <div>
+                <h3>Current Session Performance</h3>
+                <small class="text-muted">Metrics initialize to 0 at the start of each session</small>
+              </div>
+              <span class="tag tag-accent" id="badge-session-mode">Coach Mode</span>
             </div>
             <div class="card-body">
-              <div class="pipeline-flow">
-                <div class="flow-step">
-                  <div class="step-icon">🎤</div>
-                  <div class="step-details">
-                    <strong>ESP32-S3 Mic</strong>
-                    <span>INMP441 (I2S)</span>
+              <div class="progress-list">
+                <div class="progress-item">
+                  <div class="progress-labels">
+                    <span>Session Fluency</span>
+                    <strong id="session-fluency-text">0.0%</strong>
                   </div>
+                  <div class="progress-bar"><div class="progress-fill fill-cyan" id="session-fluency-bar" style="width: 0%"></div></div>
                 </div>
-                <div class="flow-arrow">➔</div>
-                <div class="flow-step">
-                  <div class="step-icon">⚡</div>
-                  <div class="step-details">
-                    <strong>FastAPI Cloud</strong>
-                    <span>STT + RAG + LLM</span>
+                <div class="progress-item">
+                  <div class="progress-labels">
+                    <span>Session Grammar Accuracy</span>
+                    <strong id="session-grammar-text">0.0%</strong>
                   </div>
+                  <div class="progress-bar"><div class="progress-fill fill-indigo" id="session-grammar-bar" style="width: 0%"></div></div>
                 </div>
-                <div class="flow-arrow">➔</div>
-                <div class="flow-step">
-                  <div class="step-icon">🔊</div>
-                  <div class="step-details">
-                    <strong>MAX98357A</strong>
-                    <span>16kHz WAV Audio</span>
+                <div class="progress-item">
+                  <div class="progress-labels">
+                    <span>Session Vocabulary Complexity</span>
+                    <strong id="session-vocab-text">0.0%</strong>
                   </div>
+                  <div class="progress-bar"><div class="progress-fill fill-emerald" id="session-vocab-bar" style="width: 0%"></div></div>
+                </div>
+                <div class="progress-item">
+                  <div class="progress-labels">
+                    <span>Session Speech Pacing</span>
+                    <strong id="session-pacing-text">0.0%</strong>
+                  </div>
+                  <div class="progress-bar"><div class="progress-fill fill-amber" id="session-pacing-bar" style="width: 0%"></div></div>
                 </div>
               </div>
-              <div class="specs-box">
-                <div class="spec-row">
-                  <span>Target Microcontroller:</span>
-                  <strong>ESP32-S3 (WROOM-1 / N8R2)</strong>
-                </div>
-                <div class="spec-row">
-                  <span>Microphone Input:</span>
-                  <strong>INMP441 MEMS Omnidirectional (I2S)</strong>
-                </div>
-                <div class="spec-row">
-                  <span>Speaker Output:</span>
-                  <strong>MAX98357A Class-D Amp (I2S)</strong>
-                </div>
-                <div class="spec-row">
-                  <span>Audio Latency:</span>
-                  <strong style="color: #34d399;">~450ms End-to-End</strong>
-                </div>
+              <div style="margin-top: 20px; display: flex; justify-content: flex-end;">
+                <button class="btn btn-secondary btn-sm" id="btn-reset-session">🔄 Reset Current Session</button>
               </div>
             </div>
           </div>
 
-          <!-- Quick Actions & Student Snapshot -->
+          <!-- Cumulative Historical Progress Card -->
           <div class="card">
             <div class="card-header">
-              <h3>Current Learner Snapshot</h3>
+              <div>
+                <h3>Cumulative Historical Progress</h3>
+                <small class="text-muted">Long-term learning memory across all sessions</small>
+              </div>
               <span class="tag" id="snap-student-grade">Grade 8</span>
             </div>
             <div class="card-body">
-              <h4 id="snap-student-name" style="margin-bottom: 8px;">Alex Mercer</h4>
-              <p class="text-muted" id="snap-student-goals" style="font-size: 0.9rem; margin-bottom: 20px;">
-                Improve speaking fluency and master science concepts
-              </p>
               <div class="progress-list">
                 <div class="progress-item">
                   <div class="progress-labels">
-                    <span>Fluency Score</span>
-                    <strong id="snap-fluency">80%</strong>
+                    <span>Historical Fluency</span>
+                    <strong id="snap-fluency">80.0%</strong>
                   </div>
-                  <div class="progress-bar">
-                    <div class="progress-fill fill-cyan" id="bar-fluency" style="width: 80%"></div>
-                  </div>
+                  <div class="progress-bar"><div class="progress-fill fill-cyan" id="bar-fluency" style="width: 80%"></div></div>
                 </div>
                 <div class="progress-item">
                   <div class="progress-labels">
-                    <span>Grammar Accuracy</span>
-                    <strong id="snap-grammar">75%</strong>
+                    <span>Historical Grammar</span>
+                    <strong id="snap-grammar">75.0%</strong>
                   </div>
-                  <div class="progress-bar">
-                    <div class="progress-fill fill-indigo" id="bar-grammar" style="width: 75%"></div>
-                  </div>
+                  <div class="progress-bar"><div class="progress-fill fill-indigo" id="bar-grammar" style="width: 75%"></div></div>
                 </div>
                 <div class="progress-item">
                   <div class="progress-labels">
-                    <span>Vocabulary Richness</span>
-                    <strong id="snap-vocab">70%</strong>
+                    <span>Historical Vocabulary</span>
+                    <strong id="snap-vocab">70.0%</strong>
                   </div>
-                  <div class="progress-bar">
-                    <div class="progress-fill fill-emerald" id="bar-vocab" style="width: 70%"></div>
-                  </div>
+                  <div class="progress-bar"><div class="progress-fill fill-emerald" id="bar-vocab" style="width: 70%"></div></div>
                 </div>
                 <div class="progress-item">
                   <div class="progress-labels">
-                    <span>Speaking Confidence</span>
-                    <strong id="snap-conf">78%</strong>
+                    <span>Overall Confidence</span>
+                    <strong id="snap-conf">78.0%</strong>
                   </div>
-                  <div class="progress-bar">
-                    <div class="progress-fill fill-amber" id="bar-conf" style="width: 78%"></div>
-                  </div>
+                  <div class="progress-bar"><div class="progress-fill fill-amber" id="bar-conf" style="width: 78%"></div></div>
                 </div>
               </div>
             </div>
@@ -232,81 +239,174 @@
         </div>
       </section>
 
-      <!-- TAB 2: ESP32 SIMULATOR & AUDIO BENCH -->
-      <section class="tab-pane" id="tab-simulator">
+      <!-- TAB 2: ONBOARDING & VOICE CHAT -->
+      <section class="tab-pane active" id="tab-simulator">
+        <!-- Onboarding Progress Stepper -->
+        <div class="onboarding-stepper" id="onboarding-stepper">
+          <div class="step-node active" id="step-node-name">
+            <div class="step-num">1</div>
+            <span>Name & Greet</span>
+          </div>
+          <div class="step-divider" id="step-div-1"></div>
+          <div class="step-node" id="step-node-goals">
+            <div class="step-num">2</div>
+            <span>Goals & Topics</span>
+          </div>
+          <div class="step-divider" id="step-div-2"></div>
+          <div class="step-node" id="step-node-weaknesses">
+            <div class="step-num">3</div>
+            <span>Strengths & Challenges</span>
+          </div>
+          <div class="step-divider" id="step-div-3"></div>
+          <div class="step-node" id="step-node-level">
+            <div class="step-num">4</div>
+            <span>Self-Reported Level</span>
+          </div>
+          <div class="step-divider" id="step-div-4"></div>
+          <div class="step-node" id="step-node-speech">
+            <div class="step-num">5</div>
+            <span>Speaking Skills Assessment</span>
+          </div>
+          <div class="step-divider" id="step-div-5"></div>
+          <div class="step-node" id="step-node-complete">
+            <div class="step-num">6</div>
+            <span>Completed</span>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-header">
             <div>
-              <h3>ESP32-S3 Live Audio Test Bench</h3>
-              <p class="text-muted">Simulate hardware audio capture & hear synthesized responses without flashing the board.</p>
+              <h3 id="studio-session-title">Mizo Voice Onboarding & Conversation Studio</h3>
+              <p class="text-muted" id="studio-onboarding-hint">Speak naturally. Mizo will lead the dialogue, ask questions, and assess your English communication skills.</p>
             </div>
-            <div class="bench-badges">
-              <span class="tag tag-accent">Virtual INMP441</span>
-              <span class="tag tag-success">Virtual MAX98357A</span>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <span class="tag tag-accent" id="badge-onboarding-step-indicator">Step: ASK_NAME</span>
+              <button class="btn btn-secondary btn-sm" onclick="document.getElementById('nav-behavior-btn').click()" title="Edit personalized system prompt, persona, and tutoring rules">
+                🧠 Customize Prompt
+              </button>
+              <button class="btn btn-secondary btn-sm" id="btn-skip-audio-onboarding" title="Complete profile via text answers without audio speaking test">
+                ⏩ Skip Audio Assessment
+              </button>
             </div>
           </div>
           <div class="card-body">
-            <div class="simulator-grid">
-              <!-- Left: Record / Input -->
-              <div class="sim-panel">
-                <h4>🎙️ Microphone Input (INMP441 Emulation)</h4>
-                <p class="text-muted" style="font-size: 0.85rem;">Speak into your browser microphone or enter test text:</p>
-                
-                <div class="record-box">
-                  <button class="btn-record" id="btn-mic-record">
-                    <span class="record-icon">🎤</span>
-                    <span class="record-text" id="record-btn-text">Hold to Talk</span>
-                  </button>
-                  <div class="record-status" id="record-status-text">Click to start recording voice</div>
+            <!-- Two-Way Continuous Voice Mode Hero Banner (ChatGPT / AI Assistant Style) -->
+            <div class="voice-mode-banner">
+              <div class="voice-mode-controls">
+                <button class="btn-voice-mode hero-start-btn" id="btn-toggle-voice-mode">
+                  <span class="mode-icon">🎙️</span>
+                  <span id="voice-mode-label">Start Live Voice Conversation</span>
+                </button>
+                <span class="voice-state-badge wake-only" id="voice-state-badge">WAKE_ONLY (Standby)</span>
+                <div class="voice-activity-indicator" id="voice-activity-indicator">
+                  <div class="volume-meter-wrapper" title="Live Microphone Volume Level">
+                    <div class="volume-meter-bar" id="volume-meter-bar"></div>
+                  </div>
+                  <span class="silence-badge" id="silence-status-badge">Ready to Start</span>
                 </div>
+              </div>
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <button class="btn btn-secondary btn-sm" id="btn-toggle-mic-mute" title="Mute or disable microphone">🎙️ Mic Active</button>
+                <button class="btn btn-secondary btn-sm" id="btn-mizo-stop" style="color:#f43f5e; font-weight:700;" title="Control command: Stop Mizo speech and return to STANDBY">🛑 Mizo Stop</button>
+                <button class="btn btn-secondary btn-sm" id="btn-dev-wake-phrase" title="Development Fallback: Locally trigger 'Mizo' activation">⚡ "Mizo"</button>
+                <label class="wake-word-toggle" title="Local wake word listener ('Mizo')">
+                  <input type="checkbox" id="chk-wake-word" checked>
+                  <span style="font-size:0.75rem; color:var(--text-muted);">Wake ("Mizo")</span>
+                </label>
+              </div>
+            </div>
 
-                <div class="divider-text"><span>OR TYPE MESSAGE</span></div>
-
-                <div class="sim-input-group">
-                  <input type="text" id="sim-text-input" placeholder="e.g., Hello Mikaza! Can you explain gravity to me?" class="form-control">
-                  <button class="btn btn-primary" id="btn-sim-send">Send ➔</button>
+            <!-- Voice Timers & State Configuration Bar -->
+            <div class="voice-config-row">
+              <div style="display:flex; align-items:center; gap:20px; flex-wrap:wrap;">
+                <div class="voice-timer-setting" title="Turn ending silence timer: after speech ends, turn finalizes after this many seconds of silence">
+                  <span>Turn Ending Silence:</span>
+                  <input type="number" id="setting-turn-silence" min="1" max="10" step="0.5" value="3.0">s
                 </div>
+                <div class="voice-timer-setting" title="Inactivity timeout: if no new speech begins after Mizo finishes, return to SLEEP standby">
+                  <span>Inactivity Standby Timeout:</span>
+                  <input type="number" id="setting-inactivity-timeout" min="10" max="15" step="1" value="12">s
+                </div>
+              </div>
+              <div style="font-size:0.75rem; color:var(--text-dim);">
+                Voice State Machine Active • Interruption / Barge-in Enabled
+              </div>
+            </div>
 
-                <div class="sim-settings-row">
-                  <label>Learning Mode:</label>
-                  <select id="sim-mode-select" class="form-control form-control-sm">
-                    <option value="coach">Communication Coach</option>
-                    <option value="tutor">Academic Subject Tutor</option>
-                    <option value="speech">Speech Trainer</option>
-                  </select>
+            <!-- Dedicated Speaking Skills Assessment HUD -->
+            <div class="assessment-hud-box" id="assessment-hud-box" style="display:none;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="font-size:1.3rem;">🎙️</span>
+                  <strong style="color:#fb7185; font-size:1.05rem;">Speaking Skills Assessment (~1 Minute Sample)</strong>
+                </div>
+                <span class="voice-state-badge assessment-recording">ASSESSMENT_RECORDING</span>
+              </div>
+              <div class="assessment-hud-topic" id="assessment-hud-topic">
+                Topic: Please speak on your interests, goals, or studies...
+              </div>
+              <div class="assessment-progress-wrapper">
+                <div class="assessment-progress-fill" id="assessment-progress-fill"></div>
+              </div>
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-family:monospace; font-size:1.1rem; color:#f43f5e; font-weight:700;" id="assessment-hud-timer">00:00 / ~01:00</div>
+                <div style="display:flex; gap:10px;">
+                  <button class="btn btn-secondary btn-sm" id="btn-cancel-assessment">Restart Sample</button>
+                  <button class="btn btn-primary btn-sm" id="btn-finish-assessment" style="background:#f43f5e; border-color:#e11d48;">Finish & Submit Assessment ➔</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Main Dialogue History Stream -->
+            <div class="chat-conversation-container">
+              <div class="chat-message-list" id="chat-messages-container">
+                <!-- Dialogue dynamically populated -->
+                <div class="text-muted" style="text-align:center; padding:40px;">Initializing Mizo dialogue...</div>
+              </div>
+            </div>
+
+            <!-- Voice Recording HUD & Live Timer -->
+            <div class="recorder-hud">
+              <div style="display:flex; align-items:center; gap:16px;">
+                <button class="btn-record" id="btn-mic-record" style="width:60px; height:60px;" title="Push to start hands-free voice turn">
+                  <span class="record-icon" style="font-size:1.4rem;">🎤</span>
+                  <span class="record-text" id="record-btn-text">Voice</span>
+                </button>
+                <div>
+                  <div class="record-hud-timer" id="record-hud-timer">00:00</div>
+                  <div class="text-muted" id="record-status-text" style="font-size:0.8rem; margin-top:2px;">Speak naturally • Auto-sends on 3s silence pause</div>
                 </div>
               </div>
 
-              <!-- Right: Speaker Playback & Feedback -->
-              <div class="sim-panel">
-                <h4>🔊 Speaker Output (MAX98357A Emulation)</h4>
-                
-                <div class="audio-player-card" id="sim-player-card">
-                  <div class="waveform-anim" id="sim-waveform">
-                    <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-                    <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-                    <div class="bar"></div><div class="bar"></div>
-                  </div>
-                  <div class="player-controls">
-                    <audio id="sim-audio-player" controls style="width: 100%; display: none;"></audio>
-                    <div id="sim-no-audio-text" class="text-muted">Send a message to hear AI speech</div>
-                  </div>
+              <!-- Speaker Playback Waveform -->
+              <div style="display:flex; align-items:center; gap:12px;">
+                <div class="waveform-anim" id="sim-waveform">
+                  <div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                  <div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                  <div class="bar"></div><div class="bar"></div>
                 </div>
+                <audio id="sim-audio-player" controls style="display:none; max-width:200px;"></audio>
+              </div>
+            </div>
 
-                <div class="interaction-result" id="sim-result-box" style="display: none;">
-                  <div class="res-item">
-                    <span class="res-label">Transcribed Voice:</span>
-                    <div class="res-content" id="sim-transcript-display">"..."</div>
-                  </div>
-                  <div class="res-item">
-                    <span class="res-label">Mizo Tutor Spoken Response:</span>
-                    <div class="res-content res-highlight" id="sim-reply-display">"..."</div>
-                  </div>
-                  <div class="res-item" id="sim-corrections-box" style="display: none;">
-                    <span class="res-label">Speech / Grammar Corrections:</span>
-                    <ul class="corrections-list" id="sim-corrections-list"></ul>
-                  </div>
+            <!-- Text Input Group -->
+            <div class="sim-input-group">
+              <input type="text" id="sim-text-input" placeholder="Type your response or use voice above..." class="form-control">
+              <button class="btn btn-primary" id="btn-sim-send">Send ➔</button>
+            </div>
+
+            <!-- Latest Assessment Results Card (Visible when assessment arrives) -->
+            <div class="assessment-details-panel" id="latest-assessment-panel" style="display:none;">
+              <summary>
+                <div style="display:flex; align-items:center; gap:10px;">
+                  <span style="font-size:1.1rem;">📊</span>
+                  <strong id="assessment-summary-header">Initial Speaking Assessment Baseline: Intermediate (Overall 78%)</strong>
                 </div>
+                <span class="tag tag-accent" id="assessment-toggle-hint">▼ Expand Detailed Rubric</span>
+              </summary>
+              <div class="assessment-details-content" id="latest-assessment-content">
+                <!-- Dynamically filled with dimension scores, honest notes, and strengths/weaknesses -->
               </div>
             </div>
           </div>
@@ -376,31 +476,31 @@
       <section class="tab-pane" id="tab-providers">
         <div class="card">
           <div class="card-header">
-            <h3>AI Provider Selection & API Keys</h3>
+            <h3>AI Engine & Provider Cascade (Primary: Llama 3.3 70B)</h3>
             <button class="btn btn-primary" id="btn-save-providers">💾 Save Provider Settings</button>
           </div>
           <div class="card-body">
-            <label style="font-weight: 600; margin-bottom: 12px; display: block;">Select Active Cloud AI Engine:</label>
+            <label style="font-weight: 600; margin-bottom: 12px; display: block;">Select Primary AI Engine (Fallbacks cascade automatically):</label>
             <div class="provider-cards">
               <div class="provider-card active" data-provider="groq" id="prov-groq">
-                <div class="prov-badge">Recommended</div>
-                <h4>⚡ Groq Cloud</h4>
-                <p>Ultra-low latency (~250ms). Best for real-time ESP32 voice conversations.</p>
+                <div class="prov-badge">Primary</div>
+                <h4>⚡ Groq (Llama 3.3 70B)</h4>
+                <p>Ultra-low latency (~250ms). Primary high-speed LLM engine.</p>
               </div>
               <div class="provider-card" data-provider="openai" id="prov-openai">
-                <div class="prov-badge">OpenAI</div>
-                <h4>🧠 OpenAI</h4>
-                <p>GPT-4o / GPT-4o-mini for highest reasoning capabilities.</p>
+                <div class="prov-badge">Fallback 1</div>
+                <h4>🧠 OpenAI (GPT-4o)</h4>
+                <p>Fallback provider when primary provider is unavailable.</p>
               </div>
               <div class="provider-card" data-provider="qwen" id="prov-qwen">
-                <div class="prov-badge">Multilingual</div>
-                <h4>🌐 Qwen</h4>
-                <p>Qwen 2.5 72B via OpenRouter for advanced bilingual tutoring.</p>
+                <div class="prov-badge">Fallback 2</div>
+                <h4>🌐 Qwen 2.5 72B</h4>
+                <p>Qwen 2.5 via OpenRouter for advanced bilingual reasoning.</p>
               </div>
               <div class="provider-card" data-provider="ollama" id="prov-ollama">
-                <div class="prov-badge">Local / Offline</div>
-                <h4>💻 Ollama</h4>
-                <p>Self-hosted local models without cloud API costs.</p>
+                <div class="prov-badge">Fallback 3</div>
+                <h4>💻 Local Ollama</h4>
+                <p>Local offline inference fallback if cloud network fails.</p>
               </div>
             </div>
 
@@ -450,15 +550,46 @@
         </div>
       </section>
 
-      <!-- TAB 5: STUDENT PROFILES -->
+      <!-- TAB 5: STUDENT PROFILES & ASSESSMENTS -->
       <section class="tab-pane" id="tab-students">
         <div class="card">
           <div class="card-header">
-            <h3>Student Profiles & Long-Term Memory</h3>
-            <button class="btn btn-secondary" id="btn-edit-student-modal">✏️ Edit Profile</button>
+            <h3>Learner Profile & Persistent Memory</h3>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-secondary" id="btn-edit-student-modal">✏️ Edit Profile</button>
+            </div>
           </div>
           <div class="card-body">
             <div id="students-container" class="students-grid">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Student Assessments & Baseline Inspector -->
+        <div class="card" style="margin-top: 24px;">
+          <div class="card-header">
+            <div>
+              <h3>Speaking Assessments & Baseline History</h3>
+              <small class="text-muted">6-Dimension linguistic evaluation: Grammar, Vocabulary, Fluency, Pronunciation, Confidence, Communication</small>
+            </div>
+            <span class="tag tag-accent" id="assessments-count-tag">0 Assessments</span>
+          </div>
+          <div class="card-body">
+            <div id="assessments-container">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Student Mistakes & Weaknesses Inspector -->
+        <div class="card" style="margin-top: 24px;">
+          <div class="card-header">
+            <h3>Persistent Mistakes & Weakness Memory</h3>
+            <span class="tag">Database Single Source of Truth</span>
+          </div>
+          <div class="card-body">
+            <div id="mistakes-container">
               <!-- Dynamically populated -->
             </div>
           </div>
@@ -469,8 +600,14 @@
       <section class="tab-pane" id="tab-history">
         <div class="card">
           <div class="card-header">
-            <h3>Recent Conversation History & Evaluations</h3>
-            <button class="btn btn-secondary btn-sm" id="btn-refresh-history">🔄 Refresh</button>
+            <div>
+              <h3>Persistent Conversation History</h3>
+              <small class="text-muted">Chronological audit of learner speech, assistant replies, and AI providers</small>
+            </div>
+            <div style="display:flex; gap:10px; align-items:center;">
+              <input type="text" id="input-history-search" class="form-control form-control-sm" placeholder="🔍 Search messages..." style="max-width:220px;">
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-history">🔄 Refresh</button>
+            </div>
           </div>
           <div class="card-body">
             <div class="history-stream" id="history-stream-box">
@@ -543,9 +680,121 @@
     </main>
   </div>
 
+  <!-- Delete Learner Data Confirmation Modal -->
+  <div class="modal-backdrop" id="modal-delete-confirm" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 style="color:#f43f5e;">⚠️ Confirm Permanent Learner Data Deletion</h3>
+        <button class="modal-close" id="btn-close-delete-modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:0.95rem; line-height:1.5; margin-bottom:14px;">
+          Are you sure you want to permanently delete all learner data?
+        </p>
+        <div style="background: rgba(244, 63, 94, 0.1); border: 1px solid rgba(244, 63, 94, 0.3); border-radius: 8px; padding: 14px; margin-bottom: 14px;">
+          <strong style="color:#f43f5e; display:block; margin-bottom:6px;">This action will permanently delete:</strong>
+          <ul style="margin-left: 20px; font-size: 0.88rem; color: var(--text-muted);">
+            <li>Active learner profile (Name, goals, topics, strengths, weaknesses)</li>
+            <li>All conversation messages and dialogue transcripts</li>
+            <li>Speaking assessment baselines and history</li>
+            <li>Identified mistake records and learning session statistics</li>
+          </ul>
+        </div>
+        <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 12px; font-size:0.85rem; color: #6ee7b7;">
+          ✓ <strong>API keys, provider settings, and system configurations will NOT be deleted.</strong>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-cancel-delete">Cancel</button>
+        <button class="btn btn-primary" id="btn-confirm-delete" style="background:linear-gradient(135deg, #e11d48, #be123c);">
+          🗑️ Permanently Delete Learner Data
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Short Recording Warning Modal -->
+  <div class="modal-backdrop" id="modal-short-recording" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 style="color:#fbbf24;">⏱️ Short Audio Recording Warning</h3>
+        <button class="modal-close" id="btn-close-short-modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:0.95rem; line-height:1.5; margin-bottom:12px;">
+          Your audio recording was only <strong id="short-recording-duration" style="color:#22d3ee;">12 seconds</strong>.
+        </p>
+        <p style="font-size:0.88rem; color:var(--text-muted); line-height:1.5;">
+          For a reliable 6-dimension speaking assessment, a <strong>~60 second sample</strong> (up to 120s) is recommended to evaluate grammar, vocabulary depth, fluency, and delivery confidence accurately.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-continue-recording">🎙️ Continue / Re-record</button>
+        <button class="btn btn-primary" id="btn-submit-anyway">⚡ Submit Audio Anyway</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Student Profile Modal -->
+  <div class="modal-backdrop" id="modal-edit-profile" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>✏️ Edit Student Profile & Memory</h3>
+        <button class="modal-close" id="btn-close-student-modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-edit-student" onsubmit="return false;">
+          <div class="form-group">
+            <label>Student Full Name:</label>
+            <input type="text" id="edit-student-name" class="form-control" placeholder="e.g. Sameer Sam">
+          </div>
+          <div class="grid-2-col" style="margin-top: 12px;">
+            <div class="form-group">
+              <label>Education / Grade Level:</label>
+              <input type="text" id="edit-student-grade" class="form-control" placeholder="e.g. Computer Science, University, Grade 8">
+            </div>
+            <div class="form-group">
+              <label>Self-Reported English Level:</label>
+              <select id="edit-student-target" class="form-control">
+                <option value="Not sure">Not sure</option>
+                <option value="Beginner">Beginner (A1)</option>
+                <option value="Elementary">Elementary (A2)</option>
+                <option value="Intermediate">Intermediate (B1)</option>
+                <option value="Upper Intermediate">Upper Intermediate (B2)</option>
+                <option value="Advanced">Advanced (C1)</option>
+                <option value="Fluent">Fluent (C2)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group" style="margin-top: 12px;">
+            <label>Learning Goals (Mizo will tailor lessons to these):</label>
+            <textarea id="edit-student-goals" rows="2" class="form-control" placeholder="e.g. Speak fluently in interviews without hesitation"></textarea>
+          </div>
+          <div class="form-group" style="margin-top: 12px;">
+            <label>Learning Topics / Subjects of Interest:</label>
+            <input type="text" id="edit-student-topics" class="form-control" placeholder="e.g. Robotics, Artificial Intelligence, Business, Physics">
+          </div>
+          <div class="form-group" style="margin-top: 12px;">
+            <label>Known Strengths (comma separated):</label>
+            <input type="text" id="edit-student-strengths" class="form-control" placeholder="e.g. Active participant, Fast vocabulary recall">
+          </div>
+          <div class="form-group" style="margin-top: 12px;">
+            <label>Focus Weaknesses / Challenges (comma separated):</label>
+            <input type="text" id="edit-student-weaknesses" class="form-control" placeholder="e.g. Subject-verb agreement, Filler words">
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-cancel-student-edit">Cancel</button>
+        <button class="btn btn-primary" id="btn-save-student-profile">💾 Save Profile & Memory</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Notification -->
   <div class="toast" id="toast">Settings Saved</div>
 
   <script src="/js/app.js"></script>
 </body>
 </html>
+

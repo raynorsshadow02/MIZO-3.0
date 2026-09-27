@@ -6,7 +6,7 @@ from app.db.database import add_knowledge_doc, add_knowledge_chunk, get_all_chun
 
 
 class RAGService:
-    """Document processing and semantic retrieval for Mikaza knowledge grounding."""
+    """Document processing and semantic retrieval for Mizo knowledge grounding."""
 
     @staticmethod
     def extract_text_from_pdf(pdf_path: Path) -> str:

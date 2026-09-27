@@ -31,7 +31,8 @@ ENV/
 *.local
 
 # Database & Runtime Data
-data/*.db
+data/*.db*
+*.bak
 data/audio_cache/*
 data/uploads/*
 !data/audio_cache/.gitkeep

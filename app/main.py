@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request
@@ -13,16 +14,33 @@ from app.api.students import router as students_router
 from app.api.conversations import router as conversations_router
 from app.api.knowledge import router as knowledge_router
 from app.api.devices import router as devices_router
+from app.services.llm_service import llm_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifecycle: Initialize DB, setup paths on startup."""
+    """Application lifecycle: Initialize DB, setup paths, verify API providers on startup."""
+    print("=" * 65)
     print(f"[Mizo 3.0] Starting {settings.APP_NAME} in [{settings.ENVIRONMENT}] mode...")
     init_db()
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Perform background connectivity check at startup
+    async def run_startup_check():
+        try:
+            print("[Mizo 3.0] Verifying configured AI providers...")
+            statuses = await llm_service.verify_all_providers()
+            for s in statuses:
+                status_icon = "✓" if s["status"] == "connected" else ("-" if s["status"] == "not_configured" else "✗")
+                print(f"  [{status_icon}] Provider: {s['provider']:<8} | Status: {s['status']:<14} | Model: {s['model']}")
+            print("[Mizo 3.0] Primary LLM: Groq (Llama 3.3 70B Versatile)")
+        except Exception as e:
+            print(f"[Mizo 3.0] Startup provider verification note: {e}")
+
+    asyncio.create_task(run_startup_check())
+
     yield
     print(f"[Mizo 3.0] Shutting down {settings.APP_NAME}...")
 
@@ -60,7 +78,8 @@ def create_app() -> FastAPI:
             "status": "healthy",
             "app": settings.APP_NAME,
             "version": "3.0.0",
-            "environment": settings.ENVIRONMENT
+            "environment": settings.ENVIRONMENT,
+            "primary_llm": "Llama 3.3 70B (Groq)"
         }
 
     # Mount API Routers
@@ -79,3 +98,4 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+

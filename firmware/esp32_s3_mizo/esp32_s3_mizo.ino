@@ -265,17 +265,50 @@ void setup() {
         Serial.print(".");
     }
     Serial.printf("\n✓ Wi-Fi Connected! IP: %s\n", WiFi.localIP().toString().c_str());
-    Serial.println("Ready! Press the BOOT button (GPIO 0) to talk with Mikaza.");
+    Serial.println("Ready! Continuous microphone monitoring ACTIVE in SLEEP.");
+    Serial.println("Say 'Mizo' anytime to wake up. (Button optional for testing).");
+}
+
+// ---------------------------------------------------------------------------------
+// CONTINUOUS MICROPHONE MONITORING (BUTTONLESS VAD)
+// ---------------------------------------------------------------------------------
+#define VAD_SAMPLE_COUNT 512
+#define SPEECH_THRESHOLD 1200 // Audio amplitude threshold for speech detection
+
+bool detectSpeechActivity() {
+    int16_t samples[VAD_SAMPLE_COUNT];
+    size_t bytes_read = 0;
+    i2s_read(I2S_MIC_PORT, (char*)samples, sizeof(samples), &bytes_read, 30 / portTICK_PERIOD_MS);
+    if (bytes_read == 0) return false;
+
+    int num_samples = bytes_read / sizeof(int16_t);
+    int32_t total_amplitude = 0;
+    for (int i = 0; i < num_samples; i++) {
+        total_amplitude += abs((int32_t)samples[i]);
+    }
+    int32_t avg_amplitude = total_amplitude / num_samples;
+    return (avg_amplitude > SPEECH_THRESHOLD);
 }
 
 void loop() {
-    // Check for Push-to-Talk button press
+    // 1. Continuous Microphone Monitoring: user speaks -> audio captured automatically
+    // The listener never completely shuts down. Button is NOT required.
+    if (detectSpeechActivity()) {
+        Serial.println("\n[VOICE] Speech activity detected by microphone!");
+        recordAndSendAudio();
+        delay(400); // Cooldown after audio playback before resuming standby monitoring
+        return;
+    }
+
+    // 2. Optional Manual Button (Retained for development/testing, NOT required)
     if (digitalRead(BUTTON_PIN) == LOW) {
         delay(50); // Debounce
         if (digitalRead(BUTTON_PIN) == LOW) {
+            Serial.println("\n🔘 [Manual Dev Trigger] Button pressed. Recording audio...");
             recordAndSendAudio();
             delay(1000); // Prevent double trigger
         }
     }
-    delay(50);
+
+    delay(25);
 }
