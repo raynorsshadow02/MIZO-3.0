@@ -22,6 +22,10 @@ class SystemSettingsUpdate(BaseModel):
     tts_voice: Optional[str] = None
     tts_rate: Optional[str] = None
     tts_pitch: Optional[str] = None
+    clear_groq_key: Optional[bool] = None
+    clear_openai_key: Optional[bool] = None
+    clear_qwen_key: Optional[bool] = None
+    clear_key: Optional[str] = None
 
 
 class SystemSettings(BaseModel):
@@ -30,7 +34,7 @@ class SystemSettings(BaseModel):
     openai_api_key: str = ""
     qwen_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434"
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"
     openai_model: str = "gpt-4o-mini"
     qwen_model: str = "qwen/qwen-2.5-72b-instruct"
     ollama_model: str = "llama3:latest"
@@ -50,10 +54,17 @@ class SystemSettings(BaseModel):
 class ProviderStatusItem(BaseModel):
     provider: str
     configured: bool
-    status: str  # "connected" | "error" | "not_configured"
+    healthy: bool = False
+    status: str  # "READY" | "AUTHENTICATED" | "INVALID_API_KEY" | "QUOTA_EXCEEDED" | "RATE_LIMITED" | "MODEL_UNAVAILABLE" | "PERMISSION_DENIED" | "NETWORK_ERROR" | "NOT_CONFIGURED"
+    auth_status: Optional[str] = None  # "AUTHENTICATED" | "INVALID_API_KEY" | "PERMISSION_DENIED" | "NOT_CONFIGURED" | "NETWORK_ERROR"
+    generation_ready: Optional[bool] = False
+    reason: Optional[str] = None
+    display_status: Optional[str] = None
     model: str
     details: Optional[str] = None
     latency_ms: Optional[float] = None
+    error: Optional[str] = None
+    available_models: Optional[List[str]] = None
 
 
 class SystemStatusResponse(BaseModel):
@@ -116,18 +127,19 @@ class StudentResponse(BaseModel):
     onboarding_step: str = "ASK_NAME"
     speaking_assessment_completed: bool = False
     profile_version: int = 1
-    baseline_grammar: float = 0.0
-    baseline_vocabulary: float = 0.0
-    baseline_fluency: float = 0.0
-    baseline_pronunciation: float = 0.0
-    baseline_confidence: float = 0.0
-    baseline_communication: float = 0.0
-    grammar_score: float = 0.0
-    vocabulary_score: float = 0.0
-    fluency_score: float = 0.0
-    pronunciation_score: float = 0.0
-    confidence_score: float = 0.0
-    communication_score: float = 0.0
+    assessed_level: Optional[str] = None
+    baseline_grammar: Optional[float] = None
+    baseline_vocabulary: Optional[float] = None
+    baseline_fluency: Optional[float] = None
+    baseline_pronunciation: Optional[float] = None
+    baseline_confidence: Optional[float] = None
+    baseline_communication: Optional[float] = None
+    grammar_score: Optional[float] = None
+    vocabulary_score: Optional[float] = None
+    fluency_score: Optional[float] = None
+    pronunciation_score: Optional[float] = None
+    confidence_score: Optional[float] = None
+    communication_score: Optional[float] = None
     total_sessions: int = 0
     strengths: List[str] = []
     weaknesses: List[str] = []
@@ -136,8 +148,38 @@ class StudentResponse(BaseModel):
 
 
 # -------------------------------------------------------------
-# Assessment Models
+# Assessment Models & Historical Progress Provenance
 # -------------------------------------------------------------
+class AssessmentSourceItem(BaseModel):
+    assessment_id: int
+    session_id: str
+    timestamp: str
+    duration_seconds: float = 0.0
+    fluency: Optional[float] = None
+    grammar: Optional[float] = None
+    vocabulary: Optional[float] = None
+    confidence: Optional[float] = None
+    level: Optional[str] = None
+
+
+class HistoricalProgressResponse(BaseModel):
+    has_data: bool
+    total_assessments: int
+    message: str = "Historical progress"
+    fluency: Optional[float] = None
+    grammar: Optional[float] = None
+    vocabulary: Optional[float] = None
+    confidence: Optional[float] = None
+    fluency_score: Optional[float] = None
+    grammar_score: Optional[float] = None
+    vocabulary_score: Optional[float] = None
+    confidence_score: Optional[float] = None
+    pronunciation_score: Optional[float] = None
+    communication_score: Optional[float] = None
+    overall_level: Optional[str] = None
+    sources: List[AssessmentSourceItem] = []
+
+
 class AssessmentResponse(BaseModel):
     id: int
     student_id: int
@@ -148,7 +190,7 @@ class AssessmentResponse(BaseModel):
     grammar_score: float = 0.0
     vocabulary_score: float = 0.0
     fluency_score: float = 0.0
-    pronunciation_score: float = 0.0
+    pronunciation_score: Optional[float] = None
     confidence_score: float = 0.0
     communication_score: float = 0.0
     overall_level: str = "Intermediate"
@@ -160,6 +202,18 @@ class AssessmentResponse(BaseModel):
     communication_feedback: Optional[str] = None
     strengths: List[str] = []
     weaknesses: List[str] = []
+    assessment_method: Optional[str] = "llm"
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    pacing_score: Optional[float] = 0.0
+    overall_score: Optional[float] = 0.0
+    words_per_minute: Optional[float] = 0.0
+    filler_count: Optional[int] = 0
+    word_count: Optional[int] = 0
+    pause_count: Optional[int] = 0
+    stt_metadata: Optional[Any] = None
+    assessment_quality: Optional[str] = "good"
+    quality_reason: Optional[str] = None
     created_at: str
 
 
@@ -175,7 +229,7 @@ class SessionMetrics(BaseModel):
     grammar_accuracy: float = 0.0
     fluency_score: float = 0.0
     vocabulary_richness: float = 0.0
-    pronunciation_score: float = 0.0
+    pronunciation_score: Optional[float] = None
     confidence_score: float = 0.0
     communication_score: float = 0.0
     pacing_score: float = 0.0
@@ -244,6 +298,102 @@ class KnowledgeDocumentResponse(BaseModel):
 
 
 # -------------------------------------------------------------
+# Academic Subjects & Syllabus Models
+# -------------------------------------------------------------
+class SubjectCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+
+
+class SubjectResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = ""
+    created_at: str
+
+
+class SyllabusTopicCreate(BaseModel):
+    topic_name: str
+    content: str
+    summary: Optional[str] = ""
+    simple_explanation: Optional[str] = ""
+    examples: Optional[List[str]] = []
+    key_terms: Optional[List[Dict[str, str]]] = []
+    sample_questions: Optional[List[Dict[str, Any]]] = []
+    order_index: Optional[int] = 0
+
+
+class SyllabusTopicResponse(BaseModel):
+    id: int
+    unit_id: int
+    topic_name: str
+    summary: Optional[str] = ""
+    content: str
+    simple_explanation: Optional[str] = ""
+    examples: List[str] = []
+    key_terms: List[Dict[str, str]] = []
+    sample_questions: List[Dict[str, Any]] = []
+    order_index: int = 0
+
+
+class SyllabusUnitCreate(BaseModel):
+    title: str
+    unit_number: int = 1
+    description: Optional[str] = ""
+    topics: Optional[List[SyllabusTopicCreate]] = []
+
+
+class SyllabusUnitResponse(BaseModel):
+    id: int
+    subject_id: int
+    unit_number: int
+    title: str
+    description: Optional[str] = ""
+    topics: List[SyllabusTopicResponse] = []
+
+
+class SyllabusHierarchyResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = ""
+    units: List[SyllabusUnitResponse] = []
+
+
+class StudentSubjectProgressResponse(BaseModel):
+    id: int
+    student_id: int
+    subject_id: int
+    current_unit_id: Optional[int] = None
+    current_topic_id: Optional[int] = None
+    completed_topics: List[str] = []
+    weak_topics: List[str] = []
+    revision_topics: List[str] = []
+    questions_asked: int = 0
+    updated_at: str
+
+
+# -------------------------------------------------------------
+# Speech & Seminar Practice Models
+# -------------------------------------------------------------
+class SpeechSessionResponse(BaseModel):
+    id: int
+    student_id: int
+    session_id: str
+    topic: str
+    time_limit_seconds: int
+    actual_duration_seconds: float
+    required_points: List[str] = []
+    transcript: str
+    grammar_issue_count: int = 0
+    covered_points: List[str] = []
+    partial_points: List[str] = []
+    missing_points: List[str] = []
+    state: str
+    attempt_number: int = 1
+    created_at: str
+
+
+# -------------------------------------------------------------
 # Device Authorization
 # -------------------------------------------------------------
 class DeviceCreate(BaseModel):
@@ -267,6 +417,10 @@ class ESP32ChatRequest(BaseModel):
     session_id: Optional[str] = None
     message: str
     mode: Optional[str] = None  # coach | tutor | speech
+    duration_seconds: Optional[float] = None
+    audio_metadata: Optional[Dict[str, Any]] = None
+    stt_metadata: Optional[Dict[str, Any]] = None
+    is_typed_text: Optional[bool] = False
 
 
 class ESP32ChatResponse(BaseModel):
@@ -289,6 +443,8 @@ class ESP32ChatResponse(BaseModel):
     is_control_command: Optional[bool] = False
     command: Optional[str] = None
     voice_state: Optional[str] = None
+    route: Optional[str] = None
+    active_section: Optional[str] = None
 
 
 class ESP32StartRequest(BaseModel):

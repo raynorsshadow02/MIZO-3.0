@@ -9,11 +9,14 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.db.database import init_db
 from app.api.esp32 import router as esp32_router
-from app.api.admin_settings import router as admin_settings_router
+from app.api.admin_settings import router as admin_settings_router, providers_router
 from app.api.students import router as students_router
 from app.api.conversations import router as conversations_router
 from app.api.knowledge import router as knowledge_router
+from app.api.subjects import router as subjects_router
+from app.api.speech import router as speech_router
 from app.api.devices import router as devices_router
+from app.api.diagnostics import router as diagnostics_router
 from app.services.llm_service import llm_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -21,11 +24,15 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifecycle: Initialize DB, setup paths, verify API providers on startup."""
+    """Application lifecycle: Initialize DB, setup paths, enter WAKE_LISTENING state on startup."""
     print("=" * 65)
     print(f"[Mizo 3.0] Starting {settings.APP_NAME} in [{settings.ENVIRONMENT}] mode...")
     init_db()
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Initialize Voice System and enter WAKE_LISTENING state on startup
+    from app.services.voice_service import voice_manager
+    voice_manager.start_wake_listener()
 
     # Perform background connectivity check at startup
     async def run_startup_check():
@@ -33,15 +40,16 @@ async def lifespan(app: FastAPI):
             print("[Mizo 3.0] Verifying configured AI providers...")
             statuses = await llm_service.verify_all_providers()
             for s in statuses:
-                status_icon = "✓" if s["status"] == "connected" else ("-" if s["status"] == "not_configured" else "✗")
-                print(f"  [{status_icon}] Provider: {s['provider']:<8} | Status: {s['status']:<14} | Model: {s['model']}")
-            print("[Mizo 3.0] Primary LLM: Groq (Llama 3.3 70B Versatile)")
+                status_icon = "✓" if s["status"] in ("connected", "ready") else ("-" if s["status"] == "not_configured" else "⚠️" if s["status"] == "degraded" else "✗")
+                print(f"  [{status_icon}] Provider: {s['provider']:<8} | Status: {s['status']:<14} | Ready: {str(s.get('generation_ready', False)):<5} | Model: {s['model']}")
+            print("[Mizo 3.0] Primary LLM: Groq (GPT OSS 120B)")
         except Exception as e:
             print(f"[Mizo 3.0] Startup provider verification note: {e}")
 
     asyncio.create_task(run_startup_check())
 
     yield
+    voice_manager.stop_wake_listener()
     print(f"[Mizo 3.0] Shutting down {settings.APP_NAME}...")
 
 
@@ -79,16 +87,20 @@ def create_app() -> FastAPI:
             "app": settings.APP_NAME,
             "version": "3.0.0",
             "environment": settings.ENVIRONMENT,
-            "primary_llm": "Llama 3.3 70B (Groq)"
+            "primary_llm": "GPT OSS 120B (Groq)"
         }
 
     # Mount API Routers
     app.include_router(esp32_router)
     app.include_router(admin_settings_router)
+    app.include_router(providers_router)
     app.include_router(students_router)
     app.include_router(conversations_router)
     app.include_router(knowledge_router)
+    app.include_router(subjects_router)
+    app.include_router(speech_router)
     app.include_router(devices_router)
+    app.include_router(diagnostics_router)
 
     # Mount Static Admin Dashboard
     if STATIC_DIR.exists():

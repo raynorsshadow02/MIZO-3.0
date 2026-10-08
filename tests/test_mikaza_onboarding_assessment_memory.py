@@ -218,10 +218,11 @@ async def test_complete_onboarding_and_speaking_assessment_pipeline():
         assert st3["baseline_grammar"] == 62.0
         assert st3["baseline_vocabulary"] == 68.0
         assert st3["baseline_fluency"] == 58.0
-        assert st3["baseline_pronunciation"] == 72.0
+        assert st3["baseline_pronunciation"] is None
         assert st3["baseline_confidence"] == 60.0
         assert st3["baseline_communication"] == 65.0
-        assert st3["target_level"] == "Elementary"
+        assert st3["assessed_level"] == "Elementary"
+        assert st3["target_level"] == "Intermediate"
 
         # Verify assessment record in assessments table
         assessments = get_student_assessments(1)

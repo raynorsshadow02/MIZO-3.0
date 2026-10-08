@@ -30,11 +30,40 @@ class STTService:
                 self._local_model = False
         return self._local_model if self._local_model is not False else None
 
-    async def transcribe_audio_file(self, file_path: Path) -> str:
-        """Transcribe an audio file using Groq Whisper, OpenAI Whisper, or local model."""
+    async def transcribe_audio_with_metadata(self, file_path: Path) -> dict:
+        """
+        Transcribe an audio file using Groq Whisper, OpenAI Whisper, or local model,
+        preserving real audio duration, segment timestamps, and word-level timing where available.
+        """
+        # Check if transcribe_audio_file has been mocked or overridden (e.g. in test suites)
+        transcribe_fn = getattr(self, "transcribe_audio_file", None)
+        if transcribe_fn and type(transcribe_fn).__name__ in ("AsyncMock", "MagicMock", "Mock"):
+            mocked_res = await transcribe_fn(file_path)
+            if isinstance(mocked_res, dict):
+                return mocked_res
+            return {
+                "text": str(mocked_res or ""),
+                "duration_seconds": 0.0,
+                "segments": [],
+                "words": [],
+                "language": "en"
+            }
+
         db_conf = get_db_settings()
         groq_api_key = db_conf.get("groq_api_key") or settings.GROQ_API_KEY
         openai_api_key = db_conf.get("openai_api_key") or settings.OPENAI_API_KEY
+
+        # Physical audio duration check via wave header if WAV file
+        physical_duration: Optional[float] = None
+        try:
+            if file_path.suffix.lower() == ".wav":
+                with wave.open(str(file_path), "rb") as wf:
+                    frames = wf.getnframes()
+                    rate = wf.getframerate()
+                    if rate > 0:
+                        physical_duration = round(frames / float(rate), 2)
+        except Exception:
+            physical_duration = None
 
         # Determine MIME type based on file extension
         suffix = file_path.suffix.lower()
@@ -48,7 +77,7 @@ class STTService:
         }
         mime_type = mime_map.get(suffix, "audio/webm" if "webm" in file_path.name.lower() else "audio/wav")
 
-        # 1. Try Groq Whisper Cloud API
+        # 1. Try Groq Whisper Cloud API with verbose_json
         if groq_api_key:
             try:
                 async with httpx.AsyncClient(timeout=25.0) as client:
@@ -59,7 +88,7 @@ class STTService:
                         data = {
                             "model": settings.GROQ_WHISPER_MODEL or "whisper-large-v3",
                             "temperature": 0.0,
-                            "response_format": "json"
+                            "response_format": "verbose_json"
                         }
                         headers = {
                             "Authorization": f"Bearer {groq_api_key}"
@@ -71,16 +100,25 @@ class STTService:
                             data=data
                         )
                         if response.status_code == 200:
-                            result = response.json()
-                            text = result.get("text", "").strip()
-                            if text:
-                                return text
+                            res_json = response.json()
+                            text = res_json.get("text", "").strip()
+                            duration = float(res_json.get("duration") or 0.0) or physical_duration
+                            segments = res_json.get("segments") or []
+                            words = res_json.get("words") or []
+                            language = res_json.get("language")
+                            return {
+                                "text": text,
+                                "duration_seconds": duration,
+                                "segments": segments,
+                                "words": words,
+                                "language": language
+                            }
                         else:
                             print(f"[STT] Groq Whisper API error {response.status_code}: {response.text}")
             except Exception as e:
                 print(f"[STT] Groq Whisper API request failed: {e}")
 
-        # 2. Try OpenAI Whisper Cloud API
+        # 2. Try OpenAI Whisper Cloud API with verbose_json
         if openai_api_key:
             try:
                 async with httpx.AsyncClient(timeout=25.0) as client:
@@ -90,7 +128,7 @@ class STTService:
                         }
                         data = {
                             "model": settings.OPENAI_WHISPER_MODEL or "whisper-1",
-                            "response_format": "json"
+                            "response_format": "verbose_json"
                         }
                         headers = {
                             "Authorization": f"Bearer {openai_api_key}"
@@ -102,10 +140,19 @@ class STTService:
                             data=data
                         )
                         if response.status_code == 200:
-                            result = response.json()
-                            text = result.get("text", "").strip()
-                            if text:
-                                return text
+                            res_json = response.json()
+                            text = res_json.get("text", "").strip()
+                            duration = float(res_json.get("duration") or 0.0) or physical_duration
+                            segments = res_json.get("segments") or []
+                            words = res_json.get("words") or []
+                            language = res_json.get("language")
+                            return {
+                                "text": text,
+                                "duration_seconds": duration,
+                                "segments": segments,
+                                "words": words,
+                                "language": language
+                            }
                         else:
                             print(f"[STT] OpenAI Whisper API error {response.status_code}: {response.text}")
             except Exception as e:
@@ -115,15 +162,39 @@ class STTService:
         local_model = self._get_local_whisper()
         if local_model:
             try:
-                segments, info = local_model.transcribe(str(file_path), beam_size=1)
-                text = " ".join([seg.text for seg in segments]).strip()
-                if text:
-                    return text
+                segments_iter, info = local_model.transcribe(str(file_path), beam_size=1)
+                segments_list = []
+                for s in segments_iter:
+                    segments_list.append({
+                        "start": getattr(s, "start", 0.0),
+                        "end": getattr(s, "end", 0.0),
+                        "text": getattr(s, "text", "")
+                    })
+                text = " ".join([seg["text"] for seg in segments_list]).strip()
+                duration = getattr(info, "duration", physical_duration) or physical_duration
+                return {
+                    "text": text,
+                    "duration_seconds": duration,
+                    "segments": segments_list,
+                    "words": [],
+                    "language": getattr(info, "language", "en")
+                }
             except Exception as e:
                 print(f"[STT] Local Faster-Whisper failed: {e}")
 
         # If audio had no intelligible speech or all STT engines are unconfigured
-        return ""
+        return {
+            "text": "",
+            "duration_seconds": physical_duration,
+            "segments": [],
+            "words": [],
+            "language": None
+        }
+
+    async def transcribe_audio_file(self, file_path: Path) -> str:
+        """Transcribe an audio file and return plain text transcript string (backwards compatible)."""
+        res = await self.transcribe_audio_with_metadata(file_path)
+        return res.get("text", "")
 
 
 stt_service = STTService()

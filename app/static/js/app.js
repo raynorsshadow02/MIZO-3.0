@@ -18,17 +18,30 @@ let lastRecordedDuration = 0;
 
 // Two-Way Continuous Voice Mode & State Machine
 const VoiceState = {
+  WAKE_LISTENING: "WAKE_LISTENING",
+  ACTIVE_CONVERSATION: "ACTIVE_CONVERSATION",
+  SNOOZE: "STANDBY",
+  SNOOZED: "STANDBY",
   STANDBY: "STANDBY",
-  WAKE_ONLY: "WAKE_ONLY",
+  WAKE_ONLY: "STANDBY",
+  WAKE_DETECTED: "WAKE_DETECTED",
+  ONBOARDING: "ONBOARDING",
+  ASSESSMENT: "ASSESSMENT",
+  PROCESSING_ASSESSMENT: "PROCESSING_ASSESSMENT",
+  ASSESSMENT_COMPLETE: "ASSESSMENT_COMPLETE",
+  READY: "READY",
+  CONVERSATION: "CONVERSATION",
+  AWAKE: "ACTIVE_LISTENING",
   ACTIVE_LISTENING: "ACTIVE_LISTENING",
   CAPTURING: "CAPTURING",
   PROCESSING: "PROCESSING",
   SPEAKING: "SPEAKING",
   STOPPING: "STOPPING",
+  ERROR_RECOVERY: "ERROR_RECOVERY",
   ASSESSMENT_RECORDING: "ASSESSMENT_RECORDING"
 };
 
-let currentVoiceState = VoiceState.STANDBY;
+let currentVoiceState = VoiceState.WAKE_LISTENING;
 let isTwoWayVoiceMode = true; // Auto-listen active by default after speech
 let isMicMuted = false;
 let audioContext = null;
@@ -54,6 +67,10 @@ let currentAbortController = null;
 // Dedicated Assessment Recording state
 let assessmentStartTime = null;
 let assessmentTimerInterval = null;
+let assessmentSpeechDetected = false;
+let assessmentSilenceStart = null;
+let assessmentSilenceTimeoutSeconds = 3.0;
+let isAssessmentFinalizing = false;
 
 document.addEventListener("DOMContentLoaded", () => {
   initClock();
@@ -88,7 +105,9 @@ function initNavigation() {
   const titleEl = document.getElementById("page-title");
 
   const titles = {
-    "tab-simulator": "Onboarding & Voice Chat",
+    "tab-simulator": "Normal Chat & English Coach",
+    "tab-study": "Study & Material-Based Teaching",
+    "tab-speech": "Speech & Seminar Practice",
     "tab-overview": "System Overview & Status",
     "tab-behavior": "AI Rules & Behavior",
     "tab-providers": "AI Provider Cascade & API Keys",
@@ -117,6 +136,8 @@ function initNavigation() {
       if (tabId === "tab-students") { loadStudents(); loadStudentMistakes(); loadAssessments(); }
       if (tabId === "tab-overview") { loadProviderStatus(); loadActiveSession(); }
       if (tabId === "tab-simulator") { loadStudents(); loadConversations(); }
+      if (tabId === "tab-study") loadStudyWorkspace();
+      if (tabId === "tab-speech") loadSpeechWorkspace();
     });
   });
 }
@@ -129,6 +150,7 @@ async function loadAllData() {
     loadSettings(),
     loadProviderStatus(),
     loadStudents(),
+    loadHistoricalProgress(),
     loadActiveSession(),
     loadConversations(),
     loadKnowledgeDocs(),
@@ -148,7 +170,7 @@ async function loadSettings() {
     const statProv = document.getElementById("stat-active-provider");
     if (statProv) statProv.textContent = formatProviderName(activeProvider);
     const statMod = document.getElementById("stat-active-model");
-    if (statMod) statMod.textContent = data[`${activeProvider}_model`] || "Llama 3.3 70B";
+    if (statMod) statMod.textContent = data[`${activeProvider}_model`] || "GPT OSS 120B";
     const footProv = document.getElementById("footer-active-provider");
     if (footProv) footProv.textContent = `Primary: ${formatProviderName(activeProvider)}`;
 
@@ -171,18 +193,254 @@ async function loadSettings() {
 
     // Populate Models & Keys
     const groqMod = document.getElementById("input-groq-model");
-    if (groqMod) groqMod.value = data.groq_model || "llama-3.3-70b-versatile";
+    if (groqMod) groqMod.value = data.groq_model || "openai/gpt-oss-120b";
     const openaiMod = document.getElementById("input-openai-model");
     if (openaiMod) openaiMod.value = data.openai_model || "gpt-4o-mini";
+    const qwenMod = document.getElementById("input-qwen-model");
+    if (qwenMod) qwenMod.value = data.qwen_model || "qwen/qwen-2.5-72b-instruct";
     const ollamaUrl = document.getElementById("input-ollama-url");
     if (ollamaUrl) ollamaUrl.value = data.ollama_base_url || "http://localhost:11434";
+    const ollamaMod = document.getElementById("input-ollama-model");
+    if (ollamaMod) ollamaMod.value = data.ollama_model || "llama3:latest";
 
+    // Dynamic catalog refresh for Groq models
+    fetchProviderModels("groq");
+
+    // Key status indicators and placeholders
+    const groqKeyInput = document.getElementById("input-groq-key");
     const groqKeyStat = document.getElementById("groq-key-status");
-    if (groqKeyStat) groqKeyStat.textContent = `Status: ${data.groq_api_key_masked || "Not set"}`;
+    if (groqKeyStat) {
+      if (data.groq_api_key_configured) {
+        groqKeyStat.innerHTML = `✓ Stored: <code style="color:#34d399;">${escapeHtml(data.groq_api_key_masked)}</code> (leave blank to keep)`;
+        if (groqKeyInput && !groqKeyInput.value) groqKeyInput.placeholder = "•••••••••••••••• (leave blank to keep)";
+      } else {
+        groqKeyStat.textContent = "Status: Not configured";
+        if (groqKeyInput) groqKeyInput.placeholder = "gsk_...";
+      }
+    }
+
+    const openaiKeyInput = document.getElementById("input-openai-key");
     const openaiKeyStat = document.getElementById("openai-key-status");
-    if (openaiKeyStat) openaiKeyStat.textContent = `Status: ${data.openai_api_key_masked || "Not set"}`;
+    if (openaiKeyStat) {
+      if (data.openai_api_key_configured) {
+        openaiKeyStat.innerHTML = `✓ Stored: <code style="color:#34d399;">${escapeHtml(data.openai_api_key_masked)}</code> (leave blank to keep)`;
+        if (openaiKeyInput && !openaiKeyInput.value) openaiKeyInput.placeholder = "•••••••••••••••• (leave blank to keep)";
+      } else {
+        openaiKeyStat.textContent = "Status: Not configured";
+        if (openaiKeyInput) openaiKeyInput.placeholder = "sk-...";
+      }
+    }
+
+    const qwenKeyInput = document.getElementById("input-qwen-key");
+    const qwenKeyStat = document.getElementById("qwen-key-status");
+    if (qwenKeyStat) {
+      if (data.qwen_api_key_configured) {
+        qwenKeyStat.innerHTML = `✓ Stored: <code style="color:#34d399;">${escapeHtml(data.qwen_api_key_masked)}</code> (leave blank to keep)`;
+        if (qwenKeyInput && !qwenKeyInput.value) qwenKeyInput.placeholder = "•••••••••••••••• (leave blank to keep)";
+      } else {
+        qwenKeyStat.textContent = "Status: Not configured";
+        if (qwenKeyInput) qwenKeyInput.placeholder = "sk-or-v1-...";
+      }
+    }
   } catch (err) {
     console.error("Error loading settings:", err);
+  }
+}
+
+function updateProviderUIStatus(prov, data) {
+  if (!prov || !data) return { statusClass: "badge-neutral", statusText: "○ NOT CONFIGURED", pillText: "○ NOT CONFIGURED" };
+  const p = prov.toLowerCase();
+  const st = (data.status || "").toUpperCase();
+  const reason = (data.reason || "").toUpperCase();
+  const isConfigured = data.configured !== false && st !== "NOT_CONFIGURED";
+
+  let statusClass = "badge-neutral";
+  let statusText = "○ NOT CONFIGURED";
+  let pillText = "○ NOT CONFIGURED";
+  let pillBg = "rgba(255, 255, 255, 0.08)";
+  let pillColor = "var(--text-muted)";
+  let keyStatusHtml = "";
+
+  if (st === "READY" || st === "CONNECTED") {
+    statusClass = "badge-success";
+    statusText = `● CONNECTED (${data.latency_ms || 0}ms)`;
+    pillText = "● CONNECTED";
+    pillBg = "rgba(16, 185, 129, 0.2)";
+    pillColor = "#34d399";
+    keyStatusHtml = `<span style="color:#34d399; font-weight:600;">✓ CONNECTED / READY</span> <span style="color:var(--text-muted); font-size:0.75rem;">(${data.latency_ms || 0}ms)</span>`;
+  } else if (st === "INVALID_API_KEY" || st === "AUTHENTICATION_ERROR") {
+    statusClass = "badge-danger";
+    statusText = "● INVALID API KEY";
+    pillText = "● INVALID API KEY";
+    pillBg = "rgba(244, 63, 94, 0.2)";
+    pillColor = "#f87171";
+    keyStatusHtml = `<span style="color:#f87171; font-weight:600;">✗ INVALID API KEY</span> <span style="color:var(--text-muted); font-size:0.75rem;">(HTTP 401 authentication failed)</span>`;
+  } else if (st === "RATE_LIMITED" || st === "QUOTA_EXCEEDED" || (st === "AUTHENTICATED" && reason === "QUOTA_EXCEEDED")) {
+    statusClass = "badge-warning";
+    statusText = "● RATE LIMITED / QUOTA EXCEEDED";
+    pillText = "● RATE LIMITED";
+    pillBg = "rgba(245, 158, 11, 0.2)";
+    pillColor = "#fbbf24";
+    keyStatusHtml = `<span style="color:#fbbf24; font-weight:600;">⚠️ RATE LIMITED / QUOTA EXCEEDED</span> <span style="color:var(--text-muted); font-size:0.75rem;">(HTTP 429)</span>`;
+  } else if (st === "MODEL_UNAVAILABLE" || st === "MODEL_ERROR") {
+    statusClass = "badge-warning";
+    statusText = "● MODEL UNAVAILABLE";
+    pillText = "● MODEL UNAVAILABLE";
+    pillBg = "rgba(245, 158, 11, 0.2)";
+    pillColor = "#fbbf24";
+    keyStatusHtml = `<span style="color:#fbbf24; font-weight:600;">⚠️ MODEL UNAVAILABLE</span> <span style="color:var(--text-muted); font-size:0.75rem;">(${escapeHtml(data.model || "")})</span>`;
+  } else if (st === "PERMISSION_DENIED" || st === "FORBIDDEN") {
+    statusClass = "badge-danger";
+    statusText = "● PERMISSION DENIED (403)";
+    pillText = "● PERMISSION DENIED";
+    pillBg = "rgba(244, 63, 94, 0.2)";
+    pillColor = "#f87171";
+    keyStatusHtml = `<span style="color:#f87171; font-weight:600;">✗ PERMISSION DENIED (HTTP 403)</span>`;
+  } else if (st === "NOT_CONFIGURED" || !isConfigured) {
+    statusClass = "badge-neutral";
+    statusText = "○ NOT CONFIGURED";
+    pillText = "○ NOT CONFIGURED";
+    pillBg = "rgba(255, 255, 255, 0.08)";
+    pillColor = "var(--text-muted)";
+    keyStatusHtml = `<span style="color:var(--text-muted);">Status: Not configured</span>`;
+  } else {
+    statusClass = "badge-danger";
+    statusText = "● " + (data.display_status || "PROVIDER UNREACHABLE");
+    pillText = "● " + (data.display_status || "UNREACHABLE");
+    pillBg = "rgba(244, 63, 94, 0.2)";
+    pillColor = "#f87171";
+    keyStatusHtml = `<span style="color:#f87171; font-weight:600;">✗ ${escapeHtml(data.error || data.details || 'Connection error')}</span>`;
+  }
+
+  // 1. Update provider selector card pill on Tab 4
+  const card = document.getElementById(`prov-${p}`);
+  if (card) {
+    let pill = card.querySelector(".card-status-pill");
+    if (!pill) {
+      pill = document.createElement("div");
+      pill.className = "card-status-pill";
+      pill.style.cssText = "font-size:0.75rem; font-weight:600; margin-top:8px; display:inline-block; padding:3px 8px; border-radius:4px;";
+      card.appendChild(pill);
+    }
+    pill.style.background = pillBg;
+    pill.style.color = pillColor;
+    pill.textContent = pillText;
+  }
+
+  // 2. Update key status text under input on Tab 4
+  const statEl = document.getElementById(`${p}-key-status`);
+  if (statEl && keyStatusHtml) {
+    statEl.innerHTML = keyStatusHtml;
+  }
+
+  // 3. Update overview dashboard strip card if already rendered
+  const stripCard = document.querySelector(`.provider-status-card[data-provider="${p}"]`);
+  if (stripCard) {
+    const badge = stripCard.querySelector(".badge");
+    if (badge) {
+      badge.className = `badge ${statusClass}`;
+      badge.textContent = statusText;
+    }
+  }
+
+  return { statusClass, statusText, pillText };
+}
+
+async function testSingleProvider(provider) {
+  const prov = (provider || "").toLowerCase().trim();
+  if (!prov) return null;
+
+  const btn = document.querySelector(`.btn-test-single-key[data-provider="${prov}"]`);
+  let originalText = "";
+  if (btn) {
+    originalText = btn.textContent;
+    btn.textContent = "⏳...";
+    btn.disabled = true;
+  }
+
+  try {
+    const url = `/api/v1/admin/settings/provider-status/${prov}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || errData.error || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+
+    // Immediately update UI for this provider
+    updateProviderUIStatus(prov, data);
+
+    const st = (data.status || "").toUpperCase();
+    const reason = (data.reason || "").toUpperCase();
+
+    if (st === "READY" || st === "CONNECTED") {
+      showToast(`✓ ${formatProviderName(prov)} is CONNECTED & READY! (${data.latency_ms || 0}ms)`);
+    } else if (st === "NOT_CONFIGURED") {
+      showToast(`○ ${formatProviderName(prov)}: NOT CONFIGURED`, true);
+    } else if (st === "INVALID_API_KEY" || st === "AUTHENTICATION_ERROR") {
+      showToast(`✗ ${formatProviderName(prov)}: INVALID API KEY (HTTP 401)`, true);
+    } else if (st === "RATE_LIMITED" || st === "QUOTA_EXCEEDED" || (st === "AUTHENTICATED" && reason === "QUOTA_EXCEEDED")) {
+      showToast(`⚠️ ${formatProviderName(prov)}: QUOTA EXCEEDED / RATE LIMITED (HTTP 429)`, true);
+    } else if (st === "MODEL_UNAVAILABLE" || st === "MODEL_ERROR") {
+      showToast(`⚠️ ${formatProviderName(prov)}: MODEL UNAVAILABLE (${data.model})`, true);
+    } else if (st === "PERMISSION_DENIED" || st === "FORBIDDEN") {
+      showToast(`✗ ${formatProviderName(prov)}: PERMISSION DENIED (HTTP 403)`, true);
+    } else {
+      showToast(`✗ ${formatProviderName(prov)}: ${data.details || data.error || 'Connection failed'}`, true);
+    }
+
+    return data;
+  } catch (err) {
+    showToast(`Failed to test ${formatProviderName(prov)}: ${err.message}`, true);
+    return null;
+  } finally {
+    if (btn) {
+      btn.textContent = originalText;
+      btn.disabled = false;
+    }
+  }
+}
+
+async function fetchProviderModels(provider = "groq") {
+  const p = (provider || "groq").toLowerCase().trim();
+  const datalist = document.getElementById(`${p}-model-list`);
+  const statusEl = document.getElementById(`${p}-model-status`);
+  const inputEl = document.getElementById(`input-${p}-model`);
+
+  if (!datalist) return;
+
+  try {
+    const res = await fetch(`/api/v1/admin/providers/${p}/models`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const models = data.models || [];
+
+    if (models.length > 0) {
+      datalist.innerHTML = "";
+      models.forEach(m => {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        const tag = m.deprecated ? " (⚠️ DEPRECATED/UNAVAILABLE)" : (m.id.includes("120b") ? " (Flagship Production)" : "");
+        opt.textContent = `${m.id}${tag}`;
+        datalist.appendChild(opt);
+      });
+
+      const currentVal = inputEl ? inputEl.value.trim() : "";
+      const currentMeta = models.find(m => m.id === currentVal);
+      if ((currentMeta && currentMeta.deprecated) || currentVal === "llama-3.3-70b-versatile") {
+        if (statusEl) {
+          statusEl.innerHTML = `<span style="color:#fbbf24; font-weight:600;">⚠️ Model ${escapeHtml(currentVal)} was deprecated on Aug 16, 2026.</span> <button type="button" class="btn btn-sm btn-outline-warning" id="btn-auto-switch-groq" style="margin-left:8px; padding:2px 8px; font-size:0.75rem;">Switch to openai/gpt-oss-120b</button>`;
+          document.getElementById("btn-auto-switch-groq")?.addEventListener("click", () => {
+            if (inputEl) inputEl.value = "openai/gpt-oss-120b";
+            statusEl.innerHTML = `<span style="color:#34d399; font-weight:600;">✓ Updated to openai/gpt-oss-120b. Click "Save Provider Settings" below.</span>`;
+          });
+        }
+      } else if (statusEl) {
+        statusEl.innerHTML = `<span style="color:var(--text-muted);">Verified active production models loaded from Groq catalog.</span>`;
+      }
+    }
+  } catch (err) {
+    console.warn(`[MODELS] Could not fetch dynamic models for ${p}:`, err);
   }
 }
 
@@ -196,25 +454,70 @@ async function loadProviderStatus() {
     const data = await res.json();
 
     const providerNames = {
-      groq: "Groq (Llama 3.3 70B)",
-      openai: "OpenAI (GPT-4o)",
-      qwen: "Qwen 2.5 (OpenRouter)",
+      groq: "Groq",
+      openai: "OpenAI",
+      qwen: "OpenRouter / Qwen",
       ollama: "Local Ollama"
     };
 
     container.innerHTML = data.providers.map(p => {
-      const isConnected = p.status === "connected";
-      const isConfigured = p.configured;
-      const statusClass = isConnected ? "badge-success" : (isConfigured ? "badge-danger" : "badge-neutral");
-      const statusText = isConnected ? `Connected (${p.latency_ms}ms)` : (isConfigured ? "Unavailable" : "Not configured");
+      const { statusClass, statusText } = updateProviderUIStatus(p.provider, p);
+      let detailSnippet = "";
+
+      const st = (p.status || "").toUpperCase();
+      const reason = (p.reason || "").toUpperCase();
+
+      if (st === "READY" || (st === "CONNECTED" && p.generation_ready !== false)) {
+        detailSnippet = `<div style="font-size:0.75rem; color:#10b981; margin-top:3px;">
+          ✓ Fully operational & ready for live speech/text generation
+        </div>`;
+      } else if (st === "AUTHENTICATED" || reason === "QUOTA_EXCEEDED" || st === "QUOTA_EXCEEDED") {
+        const errDetail = p.details || p.error || "Generation unavailable: Insufficient quota (HTTP 429)";
+        detailSnippet = `<div style="font-size:0.75rem; color:#fbbf24; margin-top:3px;">
+          <span style="background:rgba(245,158,11,0.25); color:#fde68a; padding:1px 5px; border-radius:4px; font-weight:600; font-size:0.7rem; margin-right:4px;">AUTHENTICATED</span>
+          Generation unavailable: ${escapeHtml(errDetail)}
+        </div>`;
+      } else if (st === "RATE_LIMITED") {
+        detailSnippet = `<div style="font-size:0.75rem; color:#fbbf24; margin-top:3px;">
+          <span style="background:rgba(245,158,11,0.25); color:#fde68a; padding:1px 5px; border-radius:4px; font-weight:600; font-size:0.7rem; margin-right:4px;">RATE LIMITED</span>
+          Generation temporarily unavailable: Rate limit exceeded (HTTP 429)
+        </div>`;
+      } else if (st === "INVALID_API_KEY" || st === "AUTHENTICATION_ERROR") {
+        detailSnippet = `<div style="font-size:0.75rem; color:#f87171; margin-top:3px;">
+          Authentication failed: Invalid API key (HTTP 401)
+        </div>`;
+      } else if (st === "MODEL_UNAVAILABLE" || st === "MODEL_ERROR") {
+        detailSnippet = `<div style="font-size:0.75rem; color:#fbbf24; margin-top:3px;">
+          Configured model <code>${escapeHtml(p.model)}</code> is not available for this account. Please select a supported model.
+        </div>`;
+      } else if (st === "PERMISSION_DENIED" || st === "FORBIDDEN") {
+        detailSnippet = `<div style="font-size:0.75rem; color:#f87171; margin-top:3px;">
+          Access forbidden: API key does not have permissions for this resource (HTTP 403)
+        </div>`;
+      } else if (st === "NETWORK_ERROR" || st === "UNAVAILABLE" || st === "TIMEOUT") {
+        detailSnippet = `<div style="font-size:0.75rem; color:#f87171; margin-top:3px;">
+          Provider unreachable: ${escapeHtml(p.details || p.error || "Connection timed out / server offline")}
+        </div>`;
+      } else if (st === "NOT_CONFIGURED" || !p.configured) {
+        detailSnippet = `<div style="font-size:0.75rem; color:var(--text-muted); margin-top:3px;">
+          No API credentials configured
+        </div>`;
+      } else {
+        detailSnippet = `<div style="font-size:0.75rem; color:#f87171; margin-top:3px;">
+          ${escapeHtml(p.error || p.details || "Provider error")}
+        </div>`;
+      }
 
       return `
-        <div class="provider-status-card" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px 16px; display:flex; justify-content:space-between; align-items:center;">
-          <div>
+        <div class="provider-status-card" data-provider="${p.provider}" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px 16px; display:flex; justify-content:space-between; align-items:flex-start; margin-bottom: 8px;">
+          <div style="flex: 1; padding-right: 12px;">
             <strong>${providerNames[p.provider] || p.provider}</strong>
-            <div style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">Model: ${escapeHtml(p.model)}</div>
+            <div style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">
+              Configured Model: <code style="color:var(--text-primary); font-size:0.75rem;">${escapeHtml(p.model)}</code>
+            </div>
+            ${detailSnippet}
           </div>
-          <span class="badge ${statusClass}">${statusText}</span>
+          <span class="badge ${statusClass}" style="white-space:nowrap; margin-top:2px;">${statusText}</span>
         </div>
       `;
     }).join("");
@@ -238,21 +541,27 @@ async function loadActiveSession() {
     if (badgeMode) badgeMode.textContent = `${(session.mode || 'coach').toUpperCase()} MODE`;
 
     // Populate Current Session Metrics
-    updateSessionBar("session-fluency", session.metrics.fluency_score);
-    updateSessionBar("session-grammar", session.metrics.grammar_accuracy);
-    updateSessionBar("session-vocab", session.metrics.vocabulary_richness);
-    updateSessionBar("session-pacing", session.metrics.pacing_score);
+    const msgCount = session.metrics.message_count || 0;
+    updateSessionBar("session-fluency", session.metrics.fluency_score, msgCount);
+    updateSessionBar("session-grammar", session.metrics.grammar_accuracy, msgCount);
+    updateSessionBar("session-vocab", session.metrics.vocabulary_richness, msgCount);
+    updateSessionBar("session-pacing", session.metrics.pacing_score, msgCount);
   } catch (err) {
     console.error("Error loading active session:", err);
   }
 }
 
-function updateSessionBar(idPrefix, val) {
-  val = Math.round(val || 0);
+function updateSessionBar(idPrefix, val, messageCount = 0) {
   const textEl = document.getElementById(`${idPrefix}-text`);
   const barEl = document.getElementById(`${idPrefix}-bar`);
-  if (textEl) textEl.textContent = `${val}.0%`;
-  if (barEl) barEl.style.width = `${val}%`;
+  if (!messageCount || val === null || val === undefined) {
+    if (textEl) textEl.textContent = "Not assessed yet";
+    if (barEl) barEl.style.width = "0%";
+    return;
+  }
+  const rounded = Math.round(val);
+  if (textEl) textEl.textContent = `${rounded}.0%`;
+  if (barEl) barEl.style.width = `${rounded}%`;
 }
 
 function formatProviderName(p) {
@@ -332,10 +641,7 @@ async function loadStudents() {
 
       updateOnboardingStepper(s.onboarding_step, s.onboarding_completed);
 
-      updateBar("fluency", s.fluency_score);
-      updateBar("grammar", s.grammar_score);
-      updateBar("vocab", s.vocabulary_score);
-      updateBar("conf", s.confidence_score);
+      await loadHistoricalProgress();
 
       const container = document.getElementById("students-container");
       if (container) {
@@ -483,12 +789,52 @@ async function loadStudentMistakes() {
   }
 }
 
-function updateBar(key, val) {
-  val = Math.round(val || 75);
+async function loadHistoricalProgress() {
+  try {
+    const res = await fetch(`/api/v1/students/${currentStudentId}/historical-progress`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const subTitle = document.getElementById("historical-progress-subtitle");
+
+    if (!data.has_data || data.total_assessments === 0) {
+      if (subTitle) subTitle.textContent = "No completed speaking assessments recorded yet";
+      updateBar("fluency", null, "Source: No historical assessment");
+      updateBar("grammar", null, "Source: No historical assessment");
+      updateBar("vocab", null, "Source: No historical assessment");
+      updateBar("conf", null, "Source: No historical assessment");
+    } else {
+      const lastSrc = data.sources && data.sources.length > 0 ? data.sources[data.sources.length - 1] : null;
+      const srcText = lastSrc
+        ? `Source: Assessment #${lastSrc.assessment_id} (${(lastSrc.session_id || '').substring(0, 10)}...)`
+        : `Source: ${data.total_assessments} assessment(s)`;
+      if (subTitle) subTitle.textContent = `Calculated from ${data.total_assessments} assessment(s) • Level: ${data.overall_level || 'Intermediate'}`;
+      updateBar("fluency", data.fluency_score, srcText);
+      updateBar("grammar", data.grammar_score, srcText);
+      updateBar("vocab", data.vocabulary_score, srcText);
+      updateBar("conf", data.confidence_score, srcText);
+    }
+  } catch (err) {
+    console.error("Error loading historical progress:", err);
+  }
+}
+
+function updateBar(key, val, sourceText = "") {
   const textEl = document.getElementById(`snap-${key}`);
   const barEl = document.getElementById(`bar-${key}`);
-  if (textEl) textEl.textContent = `${val}.0%`;
-  if (barEl) barEl.style.width = `${val}%`;
+  const srcEl = document.getElementById(`snap-source-${key}`);
+
+  if (val === null || val === undefined || isNaN(val)) {
+    if (textEl) textEl.textContent = "Not assessed yet";
+    if (barEl) barEl.style.width = "0%";
+  } else {
+    const rounded = Math.round(val);
+    if (textEl) textEl.textContent = `${rounded}.0%`;
+    if (barEl) barEl.style.width = `${rounded}%`;
+  }
+
+  if (srcEl && sourceText) {
+    srcEl.textContent = sourceText;
+  }
 }
 
 // -------------------------------------------------------------
@@ -496,7 +842,7 @@ function updateBar(key, val) {
 // -------------------------------------------------------------
 async function loadConversations(searchQuery = null) {
   try {
-    let url = `/api/v1/conversations?limit=50`;
+    let url = `/api/v1/conversations?student_id=${currentStudentId}&limit=50`;
     if (searchQuery && searchQuery.trim()) {
       url += `&search=${encodeURIComponent(searchQuery.trim())}`;
     }
@@ -505,17 +851,17 @@ async function loadConversations(searchQuery = null) {
     if (!res.ok) return;
     const logs = await res.json();
 
+    // Canonical chronological ordering: oldest to newest
+    logs.sort((a, b) => (a.id || 0) - (b.id || 0));
+
     // 1. Render in Live Chat Box on Onboarding Studio
     const chatBox = document.getElementById("chat-messages-container");
     if (chatBox) {
       if (logs.length === 0) {
         chatBox.innerHTML = `
-          <div class="chat-bubble assistant">
-            <div class="chat-avatar">🤖</div>
-            <div class="chat-body">
-              <div class="chat-meta"><strong>Mizo AI</strong> • Just now</div>
-              <div class="chat-text">Hello! I'm Mizo, your AI English learning robot tutor. To get started, what should I call you?</div>
-            </div>
+          <div class="text-muted" style="text-align:center; padding:40px;" id="chat-idle-placeholder">
+            💤 Mizo is in snooze mode.<br>
+            <small style="color:var(--text-dim); margin-top:8px; display:inline-block;">Say <strong>"Hey Mizo"</strong> to wake up and start onboarding.</small>
           </div>
         `;
       } else {
@@ -694,12 +1040,14 @@ function setVoiceState(newState, reason = "") {
   console.log(`[Voice SM] Transition: ${currentVoiceState} ➔ ${newState} (${reason})`);
   currentVoiceState = newState;
 
-  if (newState === VoiceState.STANDBY || newState === VoiceState.WAKE_ONLY) {
-    console.log("[VOICE] State: SLEEP");
+  if (newState === VoiceState.WAKE_LISTENING || newState === VoiceState.STANDBY || newState === VoiceState.WAKE_ONLY || newState === VoiceState.SNOOZED) {
+    console.log("[VOICE] State: WAKE_LISTENING");
     console.log("[VOICE] Wake listener: ACTIVE");
     console.log("[VOICE] Microphone: ACTIVE");
-  } else if (newState === VoiceState.ACTIVE_LISTENING) {
+  } else if (newState === VoiceState.ACTIVE_CONVERSATION || newState === VoiceState.ACTIVE_LISTENING || newState === VoiceState.READY || newState === VoiceState.CONVERSATION || newState === VoiceState.ONBOARDING) {
+    console.log("[VOICE] State: ACTIVE_CONVERSATION");
     console.log("[VOICE] State: LISTENING");
+    console.log("[VOICE] Microphone: ACTIVE");
   }
 
   const stateBadge = document.getElementById("voice-state-badge");
@@ -709,13 +1057,21 @@ function setVoiceState(newState, reason = "") {
       stateBadge.textContent = "MIC MUTED";
     } else {
       const stateMap = {
-        [VoiceState.STANDBY]: { cls: "wake-only", label: "SLEEP • Say 'Mizo'" },
-        [VoiceState.WAKE_ONLY]: { cls: "wake-only", label: "SLEEP • Say 'Mizo'" },
-        [VoiceState.ACTIVE_LISTENING]: { cls: "active-listening", label: "ACTIVE_LISTENING" },
+        [VoiceState.WAKE_LISTENING]: { cls: "wake-only", label: "WAKE_LISTENING • Say 'Hey Mizo'" },
+        [VoiceState.STANDBY]: { cls: "wake-only", label: "WAKE_LISTENING • Say 'Hey Mizo'" },
+        [VoiceState.SNOOZED]: { cls: "wake-only", label: "WAKE_LISTENING • Say 'Hey Mizo'" },
+        [VoiceState.WAKE_ONLY]: { cls: "wake-only", label: "WAKE_LISTENING • Say 'Hey Mizo'" },
+        [VoiceState.WAKE_DETECTED]: { cls: "active-listening", label: "WAKE_DETECTED" },
+        [VoiceState.ACTIVE_CONVERSATION]: { cls: "active-listening", label: "ACTIVE_CONVERSATION" },
+        [VoiceState.ONBOARDING]: { cls: "active-listening", label: "ONBOARDING" },
+        [VoiceState.READY]: { cls: "active-listening", label: "READY" },
+        [VoiceState.CONVERSATION]: { cls: "active-listening", label: "READY" },
+        [VoiceState.ACTIVE_LISTENING]: { cls: "active-listening", label: "READY" },
         [VoiceState.CAPTURING]: { cls: "capturing", label: "CAPTURING" },
         [VoiceState.PROCESSING]: { cls: "processing", label: "PROCESSING" },
         [VoiceState.SPEAKING]: { cls: "speaking", label: "SPEAKING" },
         [VoiceState.STOPPING]: { cls: "stopping", label: "STOPPING" },
+        [VoiceState.ERROR_RECOVERY]: { cls: "processing", label: "RECOVERING" },
         [VoiceState.ASSESSMENT_RECORDING]: { cls: "assessment-recording", label: "ASSESSMENT_RECORDING" }
       };
       const info = stateMap[newState] || { cls: "wake-only", label: newState };
@@ -725,7 +1081,7 @@ function setVoiceState(newState, reason = "") {
   }
 
   // State-specific lifecycle management
-  if (newState === VoiceState.STANDBY || newState === VoiceState.WAKE_ONLY || newState === VoiceState.STOPPING) {
+  if (newState === VoiceState.STANDBY || newState === VoiceState.WAKE_ONLY || newState === VoiceState.SNOOZED || newState === VoiceState.STOPPING) {
     clearTimeout(inactivityTimerId);
     silenceStartTimestamp = null;
     speechDetected = false;
@@ -756,19 +1112,19 @@ function setVoiceState(newState, reason = "") {
     // Stop assessment HUD & timer if open
     hideAssessmentHUD();
 
-    setSilenceBadge(isMicMuted ? "Microphone Muted" : "💤 Sleep • Say 'Mizo'", "normal");
+    setSilenceBadge(isMicMuted ? "Microphone Muted" : "💤 SNOOZED • Say 'Mizo'", "normal");
 
     // Keep local wake detector active in standby
     if (isWakeWordEnabled && !isMicMuted) {
       initWakeWordListener();
     }
-  } else if (newState === VoiceState.ACTIVE_LISTENING) {
+  } else if (newState === VoiceState.ACTIVE_LISTENING || newState === VoiceState.READY || newState === VoiceState.CONVERSATION || newState === VoiceState.ONBOARDING) {
     // Stop local wake detector so it doesn't conflict with conversational audio
     if (wakeWordRecognizer) {
       try { wakeWordRecognizer.abort(); } catch(e) {}
     }
     hideAssessmentHUD();
-    setSilenceBadge("🟢 Listening... (Speak naturally)", "playing");
+    setSilenceBadge("🟢 Ready (Listening...)", "playing");
     startInactivityCountdown();
   } else if (newState === VoiceState.CAPTURING) {
     clearTimeout(inactivityTimerId);
@@ -779,9 +1135,17 @@ function setVoiceState(newState, reason = "") {
   } else if (newState === VoiceState.SPEAKING) {
     clearTimeout(inactivityTimerId);
     setSilenceBadge("🔊 Mizo speaking...", "playing");
+  } else if (newState === VoiceState.ERROR_RECOVERY) {
+    clearTimeout(inactivityTimerId);
+    setSilenceBadge("⚠️ Recovering connection...", "normal");
   } else if (newState === VoiceState.ASSESSMENT_RECORDING) {
+    if (wakeWordRecognizer) {
+      try { wakeWordRecognizer.abort(); } catch(e) {}
+    }
     clearTimeout(inactivityTimerId);
     silenceStartTimestamp = null;
+    assessmentSpeechDetected = false;
+    assessmentSilenceStart = null;
     setSilenceBadge("🎙️ Recording Assessment (~1 Min)", "speaking");
     showAssessmentHUD();
   }
@@ -794,7 +1158,10 @@ function startInactivityCountdown() {
     if (currentVoiceState === VoiceState.ACTIVE_LISTENING) {
       console.log(`[Voice SM] 10s Inactivity reached with no user speech. Entering SNOOZE mode. Audio monitoring remains active.`);
       showToast(`💤 10s Inactivity. Entered Sleep. Say 'Mizo' to wake up.`);
-      setVoiceState(VoiceState.STANDBY, "inactivity_snooze");
+      // Idle time alone must not make an active conversation reject the next turn.
+      // Explicit stop commands remain the only transition into standby.
+      setSilenceBadge("Ready (Listening...)", "playing");
+      startInactivityCountdown();
     }
   }, timeoutMs);
 }
@@ -914,11 +1281,18 @@ function extractMizoTrailingText(fullTranscript) {
   return trailing;
 }
 
-function handleWakeWordDetected(fullTranscript) {
-  if (isMicMuted || (currentVoiceState !== VoiceState.WAKE_ONLY && currentVoiceState !== VoiceState.STANDBY)) return;
+function isVoiceIdleState(state) {
+  return state === VoiceState.WAKE_LISTENING || state === VoiceState.STANDBY || state === VoiceState.WAKE_ONLY || state === VoiceState.SNOOZED;
+}
 
+function handleWakeWordDetected(fullTranscript) {
+  if (isMicMuted || !isVoiceIdleState(currentVoiceState)) return;
+
+  console.log(`[VOICE] Heard: "${fullTranscript}"`);
   console.log(`[VOICE] Wake word detected: Mizo`);
+  console.log(`[VOICE] Wake word detected`);
   console.log(`[VOICE] Waking assistant`);
+  console.log(`[VOICE] State: ACTIVE_CONVERSATION`);
 
   const remainingText = extractMizoTrailingText(fullTranscript);
 
@@ -926,24 +1300,26 @@ function handleWakeWordDetected(fullTranscript) {
 
   if (remainingText.length > 0) {
     // Treat trailing words as direct user input
-    setVoiceState(VoiceState.ACTIVE_LISTENING, "wake_with_speech");
+    setVoiceState(VoiceState.ACTIVE_CONVERSATION, "wake_with_speech");
     const textInput = document.getElementById("sim-text-input");
     if (textInput) textInput.value = remainingText;
     sendTextMessage(remainingText);
   } else {
-    // Wake phrase alone -> transition to ACTIVE_LISTENING & listen for speech immediately
-    setVoiceState(VoiceState.ACTIVE_LISTENING, "wake_phrase");
+    // Wake phrase alone -> transition to ACTIVE_CONVERSATION & acknowledge
+    setVoiceState(VoiceState.ACTIVE_CONVERSATION, "wake_phrase");
+    console.log("[VOICE] Listening for user request");
     const chatBox = document.getElementById("chat-messages-container");
     const hasHistory = chatBox && chatBox.querySelectorAll(".chat-bubble").length > 1;
     if (!hasHistory) {
       triggerMizoStartGreeting();
     } else {
-      sendTextMessage("Mizo");
+      sendTextMessage("Hey Mizo");
     }
   }
 }
 
 function executeMizoStop() {
+  console.log("[VOICE] Stop command detected");
   console.log("[Voice SM] 'Mizo stop' control command received.");
   setVoiceState(VoiceState.STOPPING, "mizo_stop_command");
 
@@ -970,9 +1346,9 @@ function executeMizoStop() {
   }
   isRecording = false;
 
-  // 4. Return to STANDBY mode
-  setVoiceState(VoiceState.STANDBY, "mizo_stop_command");
-  showToast("🛑 'Mizo stop' executed. Standby mode active.");
+  // 4. Return to WAKE_LISTENING mode with microphone & listener active
+  setVoiceState(VoiceState.WAKE_LISTENING, "mizo_stop_command");
+  showToast("🛑 'Mizo stop' executed. Wake listening active.");
 }
 const executeMikazaStop = executeMizoStop;
 
@@ -1136,10 +1512,33 @@ function initAudioContextVAD(stream) {
         return;
       }
 
-      // 2. Dedicated Assessment Recording: normal 3s turn silence timer is DISABLED!
+      // 2. Dedicated Assessment Recording: speech detected then 3s continuous silence auto-submits
       if (currentVoiceState === VoiceState.ASSESSMENT_RECORDING) {
         if (rms > currentSpeechThreshold) {
-          setSilenceBadge("🎙️ Recording Assessment (Speak continuously)...", "speaking");
+          assessmentSpeechDetected = true;
+          assessmentSilenceStart = null;
+          setSilenceBadge("🎙️ Recording Assessment (Speech detected)...", "speaking");
+        } else if (assessmentSpeechDetected) {
+          if (!assessmentSilenceStart) {
+            assessmentSilenceStart = now;
+          }
+          const silenceDuration = (now - assessmentSilenceStart) / 1000;
+          const remaining = Math.max(0, (assessmentSilenceTimeoutSeconds - silenceDuration)).toFixed(1);
+          setSilenceBadge(`⏳ Assessment silence detected (auto-submit in ${remaining}s)`, "silence-countdown");
+
+          if (silenceDuration >= assessmentSilenceTimeoutSeconds) {
+            const elapsedSecs = assessmentStartTime ? Math.round((Date.now() - assessmentStartTime) / 1000) : 0;
+            if (elapsedSecs >= 15) {
+              console.log(`[Assessment VAD] Continuous silence threshold (${assessmentSilenceTimeoutSeconds}s) reached after >=15s speech. Auto-submitting.`);
+              finishSpeakingAssessment(true);
+              return;
+            } else {
+              assessmentSilenceStart = null;
+              setSilenceBadge("🎙️ Take your time. Please speak freely for about a minute on the topic...", "normal");
+            }
+          }
+        } else {
+          setSilenceBadge("🎙️ Recording Assessment (Speak continuously)...", "normal");
         }
         vadAnimationId = requestAnimationFrame(checkVolume);
         return;
@@ -1306,7 +1705,10 @@ function showAssessmentHUD(topic = "") {
   hud.style.display = "block";
   if (topic && topicEl) topicEl.textContent = `Topic: ${topic}`;
 
+  isAssessmentFinalizing = false;
   assessmentStartTime = Date.now();
+  assessmentSpeechDetected = false;
+  assessmentSilenceStart = null;
   if (progressFill) progressFill.style.width = "0%";
 
   clearInterval(assessmentTimerInterval);
@@ -1323,7 +1725,7 @@ function showAssessmentHUD(topic = "") {
     if (elapsedSecs >= 120) {
       clearInterval(assessmentTimerInterval);
       showToast("Maximum assessment time reached (120s). Finalizing speech sample.");
-      finishSpeakingAssessment();
+      finishSpeakingAssessment(true);
     }
   }, 1000);
 }
@@ -1334,17 +1736,22 @@ function hideAssessmentHUD() {
   clearInterval(assessmentTimerInterval);
 }
 
-function finishSpeakingAssessment() {
+function finishSpeakingAssessment(isAuto = false) {
+  if (isAssessmentFinalizing) {
+    console.log("[Assessment VAD] Assessment already finalizing, ignoring duplicate submit invocation.");
+    return;
+  }
   const elapsedSecs = assessmentStartTime ? Math.round((Date.now() - assessmentStartTime) / 1000) : 0;
   hideAssessmentHUD();
 
-  if (elapsedSecs < 20) {
-    showToast(`Speech sample was only ${elapsedSecs}s (too short). Please speak for about 1 minute on the topic.`, true);
+  if (elapsedSecs < 10 && !isAuto) {
+    showToast(`Speech sample was only ${elapsedSecs}s. Please speak for about 1 minute on the topic.`, true);
     const modal = document.getElementById("modal-short-recording");
     if (modal) modal.style.display = "flex";
     return;
   }
 
+  isAssessmentFinalizing = true;
   stopVoiceRecording();
 }
 
@@ -1485,7 +1892,7 @@ function initWakeWordListener() {
     wakeWordRecognizer.lang = "en-US";
 
     wakeWordRecognizer.onresult = (event) => {
-      if (!isWakeWordEnabled || isMicMuted || (currentVoiceState !== VoiceState.WAKE_ONLY && currentVoiceState !== VoiceState.STANDBY)) return;
+      if (!isWakeWordEnabled || isMicMuted || !isVoiceIdleState(currentVoiceState)) return;
 
       const lastResultIndex = event.results.length - 1;
       const transcript = event.results[lastResultIndex][0].transcript.trim();
@@ -1499,7 +1906,7 @@ function initWakeWordListener() {
         handleWakeWordDetected(transcript);
       } else {
         console.log(`[VOICE] Heard: "${transcript}"`);
-        console.log("[VOICE] Wake word not detected. Ignoring.");
+        console.log("[VOICE] No wake word. Ignoring.");
       }
     };
 
@@ -1507,7 +1914,7 @@ function initWakeWordListener() {
       if (e.error !== "no-speech" && e.error !== "aborted") {
         console.log("[Wake Word Engine]", e.error);
       }
-      if (isWakeWordEnabled && !isMicMuted && (currentVoiceState === VoiceState.WAKE_ONLY || currentVoiceState === VoiceState.STANDBY)) {
+      if (isWakeWordEnabled && !isMicMuted && isVoiceIdleState(currentVoiceState)) {
         setTimeout(() => {
           try { wakeWordRecognizer.start(); } catch (err) {}
         }, 800);
@@ -1515,7 +1922,7 @@ function initWakeWordListener() {
     };
 
     wakeWordRecognizer.onend = () => {
-      if (isWakeWordEnabled && !isMicMuted && (currentVoiceState === VoiceState.WAKE_ONLY || currentVoiceState === VoiceState.STANDBY)) {
+      if (isWakeWordEnabled && !isMicMuted && isVoiceIdleState(currentVoiceState)) {
         setTimeout(() => {
           try { wakeWordRecognizer.start(); } catch (e) {}
         }, 500);
@@ -1560,8 +1967,9 @@ async function sendAudioToBackend(audioBlob, isAssessment = false) {
     });
     const data = await res.json();
     currentAbortController = null;
+    isProcessingBackend = false;
 
-    if (currentVoiceState === VoiceState.WAKE_ONLY) {
+    if (currentVoiceState === VoiceState.WAKE_ONLY || currentVoiceState === VoiceState.STANDBY || currentVoiceState === VoiceState.SNOOZED) {
       console.log("[Voice SM] Late response discarded due to stop command.");
       return;
     }
@@ -1574,19 +1982,27 @@ async function sendAudioToBackend(audioBlob, isAssessment = false) {
     if (recordStatus) recordStatus.textContent = "Ready";
     if (timerEl) timerEl.textContent = "00:00 / 01:00";
 
+    isAssessmentFinalizing = false;
     handleInteractionResponse(data);
   } catch (err) {
+    isProcessingBackend = false;
+    isAssessmentFinalizing = false;
     if (err.name === "AbortError") {
       console.log("[Voice SM] Audio upload aborted by stop command.");
       return;
     }
     currentAbortController = null;
     if (recordStatus) recordStatus.textContent = "Error processing audio";
-    setSilenceBadge("STT Error", "normal");
+    setSilenceBadge("Error • Ready", "normal");
     console.error(err);
 
-    if (currentVoiceState !== VoiceState.WAKE_ONLY) {
-      setTimeout(() => setVoiceState(VoiceState.ACTIVE_LISTENING, "error_resume"), 1200);
+    if (currentVoiceState !== VoiceState.WAKE_ONLY && currentVoiceState !== VoiceState.STANDBY && currentVoiceState !== VoiceState.SNOOZED) {
+      setTimeout(() => {
+        setVoiceState(VoiceState.READY, "error_resume");
+        if (!isRecording && !isMicMuted) {
+          startVoiceRecording(true);
+        }
+      }, 1000);
     }
   }
 }
@@ -1605,6 +2021,7 @@ async function sendTextMessage(overrideText = null) {
   }
 
   currentAbortController = new AbortController();
+  isProcessingBackend = true;
   setVoiceState(VoiceState.PROCESSING, "sending_text");
 
   try {
@@ -1615,33 +2032,36 @@ async function sendTextMessage(overrideText = null) {
         message: msg,
         student_id: currentStudentId,
         session_id: activeSessionId,
-        mode: "coach"
+        mode: "coach",
+        is_typed_text: true
       }),
       signal: currentAbortController.signal
     });
     const data = await res.json();
     currentAbortController = null;
+    isProcessingBackend = false;
 
-    if (currentVoiceState === VoiceState.WAKE_ONLY) {
+    if (currentVoiceState === VoiceState.WAKE_ONLY || currentVoiceState === VoiceState.STANDBY || currentVoiceState === VoiceState.SNOOZED) {
       console.log("[Voice SM] Late response discarded due to stop command.");
       return;
     }
 
     handleInteractionResponse(data);
   } catch (err) {
+    isProcessingBackend = false;
     if (err.name === "AbortError") {
       console.log("[Voice SM] Text request aborted by stop command.");
       return;
     }
     currentAbortController = null;
     console.error("Chat error:", err);
-    if (currentVoiceState !== VoiceState.WAKE_ONLY) {
-      setVoiceState(VoiceState.ACTIVE_LISTENING, "chat_error_fallback");
+    if (currentVoiceState !== VoiceState.WAKE_ONLY && currentVoiceState !== VoiceState.STANDBY && currentVoiceState !== VoiceState.SNOOZED) {
+      setVoiceState(VoiceState.READY, "chat_error_fallback");
     }
   }
 }
 
-function handleInteractionResponse(data) {
+async function handleInteractionResponse(data) {
   // 1. Play Audio through Virtual Player
   if (data.audio_url) {
     const player = document.getElementById("sim-audio-player");
@@ -1699,32 +2119,33 @@ function handleInteractionResponse(data) {
       };
     }
   } else {
-    // If no audio was returned, resume listening if in voice mode or transition to assessment
+    // If no audio was returned, clear processing state and resume listening if mic active
     if (data.onboarding_step === "speech_test_prompt" || data.onboarding_step === "speaking_assessment") {
       setVoiceState(VoiceState.ASSESSMENT_RECORDING, "assessment_prompt_no_audio");
       showAssessmentHUD(data.topic || "1-Minute Speaking Sample");
       if (!isRecording && !isMicMuted) {
         setTimeout(() => startVoiceRecording(true), 500);
       }
-    } else if (!isRecording && !isMicMuted) {
-      setVoiceState(VoiceState.ACTIVE_LISTENING, "no_audio_auto_listen");
-      setTimeout(() => startVoiceRecording(true), 600);
+    } else {
+      setVoiceState(VoiceState.READY, "no_audio_ready");
+      setSilenceBadge("Ready", "idle");
+      if (!isRecording && !isMicMuted) {
+        setVoiceState(VoiceState.ACTIVE_LISTENING, "no_audio_auto_listen");
+        setTimeout(() => startVoiceRecording(true), 600);
+      }
     }
   }
 
   // 2. Update Session Metrics & Cumulative Progress
   if (data.session_metrics) {
-    updateSessionBar("session-fluency", data.session_metrics.fluency_score);
-    updateSessionBar("session-grammar", data.session_metrics.grammar_accuracy);
-    updateSessionBar("session-vocab", data.session_metrics.vocabulary_richness);
-    updateSessionBar("session-pacing", data.session_metrics.pacing_score);
+    updateSessionBar("session-fluency", data.session_metrics.fluency_score, 1);
+    updateSessionBar("session-grammar", data.session_metrics.grammar_accuracy, 1);
+    updateSessionBar("session-vocab", data.session_metrics.vocabulary_richness, 1);
+    updateSessionBar("session-pacing", data.session_metrics.pacing_score, 1);
   }
 
   if (data.historical_metrics) {
-    updateBar("grammar", data.historical_metrics.grammar_score);
-    updateBar("vocab", data.historical_metrics.vocabulary_score);
-    updateBar("fluency", data.historical_metrics.fluency_score);
-    updateBar("conf", data.historical_metrics.confidence_score);
+    await loadHistoricalProgress();
   }
 
   // 3. Check if an assessment was generated
@@ -1737,6 +2158,14 @@ function handleInteractionResponse(data) {
   loadStudentMistakes();
   loadStudents();
   loadAssessments();
+
+  // 5. Automatic section switching from Agent Router
+  if (data.active_section) {
+    switchWorkspace(data.active_section);
+  }
+  if (data.active_section === "study" && data.response) {
+    appendStudyMessage("mizo", data.response);
+  }
 }
 
 function renderLatestAssessmentPanel(a) {
@@ -1747,17 +2176,26 @@ function renderLatestAssessmentPanel(a) {
 
   panel.style.display = "block";
   if (header) {
-    header.textContent = `Baseline Assessment Completed: ${a.overall_level || 'Intermediate'} (${a.communication_score || 75}% Communication Score)`;
+    const scoreVal = (a.communication_score !== null && a.communication_score !== undefined) ? `${Math.round(a.communication_score)}%` : 'Pending';
+    const methodBadge = a.assessment_method === 'llm'
+      ? ` [AI - ${a.provider || 'LLM'}]`
+      : (a.assessment_method === 'fallback' ? ` [Deterministic Fallback]` : '');
+    header.textContent = `Baseline Assessment Completed: ${a.overall_level || 'Assessed'} (${scoreVal} Communication Score)${methodBadge}`;
   }
+
+  const methodLabel = a.assessment_method ? a.assessment_method.toUpperCase() : 'LLM';
+  const qualityLabel = a.assessment_quality || 'normal';
 
   content.innerHTML = `
     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px;">
-      <div><span class="text-muted">Grammar:</span> <strong>${a.grammar_score}%</strong></div>
-      <div><span class="text-muted">Vocabulary:</span> <strong>${a.vocabulary_score}%</strong></div>
-      <div><span class="text-muted">Fluency:</span> <strong>${a.fluency_score}%</strong></div>
-      <div><span class="text-muted">Pronunciation:</span> <strong>${a.pronunciation_score}%</strong></div>
-      <div><span class="text-muted">Confidence:</span> <strong>${a.confidence_score}%</strong></div>
-      <div><span class="text-muted">Overall:</span> <strong>${a.overall_level}</strong></div>
+      <div><span class="text-muted">Grammar:</span> <strong>${a.grammar_score != null ? Math.round(a.grammar_score) + '%' : 'N/A'}</strong></div>
+      <div><span class="text-muted">Vocabulary:</span> <strong>${a.vocabulary_score != null ? Math.round(a.vocabulary_score) + '%' : 'N/A'}</strong></div>
+      <div><span class="text-muted">Fluency:</span> <strong>${a.fluency_score != null ? Math.round(a.fluency_score) + '%' : 'N/A'}</strong></div>
+      <div><span class="text-muted">Pronunciation:</span> <strong>${a.pronunciation_score != null ? Math.round(a.pronunciation_score) + '%' : 'N/A'}</strong></div>
+      <div><span class="text-muted">Confidence:</span> <strong>${a.confidence_score != null ? Math.round(a.confidence_score) + '%' : 'N/A'}</strong></div>
+      <div><span class="text-muted">Method:</span> <strong>${escapeHtml(methodLabel)}</strong></div>
+      <div><span class="text-muted">Quality:</span> <strong>${escapeHtml(qualityLabel)}</strong></div>
+      <div><span class="text-muted">Overall:</span> <strong>${escapeHtml(a.overall_level || 'Assessed')}</strong></div>
     </div>
 
     <div style="line-height:1.5;">
@@ -1783,6 +2221,8 @@ function setupEventListeners() {
   setupStudentProfileModal();
   setupDeleteLearnerModal();
   setupShortRecordingModal();
+  setupStudySectionEventListeners();
+  setupSpeechSectionEventListeners();
 
   // 1. Start New Session Button
   const btnNewSession = document.getElementById("btn-global-new-session");
@@ -1803,6 +2243,31 @@ function setupEventListeners() {
         }
       } catch (e) {
         showToast("Error starting new session", true);
+      }
+    });
+  }
+
+  // 1b. Reset Current Session Button (Part 23)
+  const btnResetSession = document.getElementById("btn-reset-session");
+  if (btnResetSession) {
+    btnResetSession.addEventListener("click", async () => {
+      if (!confirm("Reset Current Session?\n\nThis will clear current session metrics and turns without deleting historical progress or your learner profile.")) {
+        return;
+      }
+      try {
+        const res = await fetch(`/api/v1/students/${currentStudentId}/sessions/reset-current`, {
+          method: "POST"
+        });
+        if (res.ok) {
+          showToast("Current session reset! Session metrics cleared, historical progress preserved.");
+          await loadActiveSession();
+          await loadConversations();
+          await loadHistoricalProgress();
+        } else {
+          showToast("Error resetting current session", true);
+        }
+      } catch (err) {
+        showToast("Network error resetting current session", true);
       }
     });
   }
@@ -1909,64 +2374,7 @@ function setupEventListeners() {
     });
   }
 
-  // 7. Provider Card Selection
-  document.querySelectorAll(".provider-card").forEach(card => {
-    card.addEventListener("click", () => {
-      document.querySelectorAll(".provider-card").forEach(c => c.classList.remove("active"));
-      card.classList.add("active");
-      activeProvider = card.getAttribute("data-provider");
-    });
-  });
-
-  // 8. Toggle Password Visibility
-  document.querySelectorAll(".btn-toggle-key").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const targetId = btn.getAttribute("data-target");
-      const input = document.getElementById(targetId);
-      input.type = input.type === "password" ? "text" : "password";
-      btn.textContent = input.type === "password" ? "👁️" : "🙈";
-    });
-  });
-
-  // 9. Save AI Behavior
-  const btnSaveBehavior = document.getElementById("btn-save-behavior");
-  if (btnSaveBehavior) {
-    btnSaveBehavior.addEventListener("click", async () => {
-      const payload = {
-        system_prompt: document.getElementById("setting-system-prompt").value,
-        coaching_mode: document.getElementById("setting-coaching-mode").value,
-        grammar_strictness: document.getElementById("setting-grammar-strictness").value,
-        tts_voice: document.getElementById("setting-tts-voice").value,
-        tts_rate: document.getElementById("setting-tts-rate").value,
-      };
-      await saveSettingsAPI(payload);
-    });
-  }
-
-  // 10. Save AI Providers & Keys
-  const btnSaveProviders = document.getElementById("btn-save-providers");
-  if (btnSaveProviders) {
-    btnSaveProviders.addEventListener("click", async () => {
-      const payload = {
-        active_provider: activeProvider,
-        groq_model: document.getElementById("input-groq-model").value,
-        openai_model: document.getElementById("input-openai-model").value,
-        ollama_base_url: document.getElementById("input-ollama-url").value,
-      };
-      const groqKey = document.getElementById("input-groq-key").value.trim();
-      const openaiKey = document.getElementById("input-openai-key").value.trim();
-      const qwenKey = document.getElementById("input-qwen-key").value.trim();
-
-      if (groqKey) payload.groq_api_key = groqKey;
-      if (openaiKey) payload.openai_api_key = openaiKey;
-      if (qwenKey) payload.qwen_api_key = qwenKey;
-
-      await saveSettingsAPI(payload);
-      await loadProviderStatus();
-    });
-  }
-
-  // 11. Add Device
+  // 7. Add Device
   const btnAddDevice = document.getElementById("btn-add-device");
   if (btnAddDevice) {
     btnAddDevice.addEventListener("click", async () => {
@@ -2206,9 +2614,18 @@ async function saveSettingsAPI(payload) {
       body: JSON.stringify(payload)
     });
     if (res.ok) {
-      showToast("Settings & custom prompt saved successfully!");
+      showToast("Settings saved successfully!");
       await loadSettings();
-      await loadProviderStatus();
+      if (payload.groq_api_key) {
+        testSingleProvider("groq");
+      } else if (payload.openai_api_key) {
+        testSingleProvider("openai");
+      } else if (payload.qwen_api_key) {
+        testSingleProvider("qwen");
+      } else if (activeProvider) {
+        testSingleProvider(activeProvider);
+      }
+      loadProviderStatus();
     } else {
       showToast("Error saving settings", true);
     }
@@ -2245,25 +2662,94 @@ function setupSettingsEventHandlers() {
   const btnSaveProviders = document.getElementById("btn-save-providers");
   if (btnSaveProviders) {
     btnSaveProviders.addEventListener("click", async () => {
-      const groqModel = document.getElementById("input-groq-model")?.value || "llama-3.3-70b-versatile";
+      const groqModel = document.getElementById("input-groq-model")?.value || "openai/gpt-oss-120b";
       const groqKey = document.getElementById("input-groq-key")?.value || "";
       const openaiModel = document.getElementById("input-openai-model")?.value || "gpt-4o-mini";
       const openaiKey = document.getElementById("input-openai-key")?.value || "";
+      const qwenModel = document.getElementById("input-qwen-model")?.value || "qwen/qwen-2.5-72b-instruct";
+      const qwenKey = document.getElementById("input-qwen-key")?.value || "";
       const ollamaUrl = document.getElementById("input-ollama-url")?.value || "http://localhost:11434";
+      const ollamaModel = document.getElementById("input-ollama-model")?.value || "llama3:latest";
 
       const payload = {
         active_provider: activeProvider,
-        groq_model: groqModel,
-        openai_model: openaiModel,
-        ollama_base_url: ollamaUrl
+        groq_model: groqModel.trim(),
+        openai_model: openaiModel.trim(),
+        qwen_model: qwenModel.trim(),
+        ollama_base_url: ollamaUrl.trim(),
+        ollama_model: ollamaModel.trim()
       };
 
       if (groqKey.trim()) payload.groq_api_key = groqKey.trim();
       if (openaiKey.trim()) payload.openai_api_key = openaiKey.trim();
+      if (qwenKey.trim()) payload.qwen_api_key = qwenKey.trim();
 
       await saveSettingsAPI(payload);
     });
   }
+
+  // Refresh Groq Models button
+  const btnRefreshGroq = document.getElementById("btn-refresh-groq-models");
+  if (btnRefreshGroq) {
+    btnRefreshGroq.addEventListener("click", async () => {
+      btnRefreshGroq.disabled = true;
+      const origText = btnRefreshGroq.textContent;
+      btnRefreshGroq.textContent = "⏳...";
+      await fetchProviderModels("groq");
+      btnRefreshGroq.textContent = origText;
+      btnRefreshGroq.disabled = false;
+      showToast("Groq model catalog refreshed.");
+    });
+  }
+
+  // Individual Provider Test Buttons
+  document.querySelectorAll(".btn-test-single-key").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const prov = btn.getAttribute("data-provider");
+      if (!prov) return;
+      const input = document.getElementById(`input-${prov}-key`);
+      const typedKey = input ? input.value.trim() : "";
+      if (typedKey && !typedKey.includes("•")) {
+        // Persist newly typed key into canonical storage first, then test
+        const payload = { active_provider: activeProvider };
+        payload[`${prov}_api_key`] = typedKey;
+        await saveSettingsAPI(payload);
+      } else {
+        await testSingleProvider(prov);
+      }
+    });
+  });
+
+  // Clear API Key Buttons
+  document.querySelectorAll(".btn-clear-key").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const prov = btn.getAttribute("data-provider");
+      const targetId = btn.getAttribute("data-target");
+      if (!prov) return;
+      if (confirm(`Are you sure you want to delete and clear the stored ${formatProviderName(prov)} API key?`)) {
+        const payload = {};
+        payload[`clear_${prov}_key`] = true;
+        await saveSettingsAPI(payload);
+        const input = document.getElementById(targetId);
+        if (input) input.value = "";
+        showToast(`${formatProviderName(prov)} API key cleared.`);
+        await loadSettings();
+        updateProviderUIStatus(prov, { configured: false, status: "not_configured", provider: prov });
+      }
+    });
+  });
+
+  // Toggle Password Visibility
+  document.querySelectorAll(".btn-toggle-key").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const targetId = btn.getAttribute("data-target");
+      const input = document.getElementById(targetId);
+      if (input) {
+        input.type = input.type === "password" ? "text" : "password";
+        btn.textContent = input.type === "password" ? "👁️" : "🙈";
+      }
+    });
+  });
 
   // Provider Card Selection
   document.querySelectorAll(".provider-card").forEach(card => {
@@ -2274,15 +2760,28 @@ function setupSettingsEventHandlers() {
         document.querySelectorAll(".provider-card").forEach(c => {
           c.classList.toggle("active", c.getAttribute("data-provider") === activeProvider);
         });
-        showToast(`Selected primary provider: ${formatProviderName(activeProvider)}`);
+        const pillText = card.querySelector(".card-status-pill")?.textContent || "";
+        if (pillText && !pillText.includes("READY")) {
+          showToast(`Selected primary: ${formatProviderName(activeProvider)} (${pillText} — Mizo will cascade to ready fallbacks)`, true);
+        } else {
+          showToast(`Selected primary provider: ${formatProviderName(activeProvider)}`);
+        }
       }
     });
   });
 
-  // Test Provider Connections
+  // Test All Provider Connections
   const btnTestProviders = document.getElementById("btn-test-providers");
   if (btnTestProviders) {
     btnTestProviders.addEventListener("click", async () => {
+      const container = document.getElementById("provider-status-container");
+      if (container) {
+        container.innerHTML = `
+          <div class="provider-status-card" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px 16px; display:flex; justify-content:center; align-items:center;">
+            <span style="color:#818cf8;">⚡ Testing all AI provider connections in parallel...</span>
+          </div>
+        `;
+      }
       showToast("Testing provider connections...");
       await loadProviderStatus();
     });
@@ -2307,3 +2806,592 @@ function escapeHtml(text) {
   div.textContent = text;
   return div.innerHTML;
 }
+
+// -------------------------------------------------------------
+// Workspace Switching (Agent Router Automatic Navigation)
+// -------------------------------------------------------------
+function switchWorkspace(section) {
+  let tabId = "tab-simulator";
+  if (section === "study") tabId = "tab-study";
+  else if (section === "speech") tabId = "tab-speech";
+  else if (section === "normal_chat") tabId = "tab-simulator";
+  else if (section && section.startsWith("tab-")) tabId = section;
+
+  const targetTab = document.querySelector(`.nav-item[data-tab="${tabId}"]`);
+  if (targetTab && !targetTab.classList.contains("active")) {
+    console.log(`[Workspace Router] Switching workspace to: ${section} (${tabId})`);
+    targetTab.click();
+  }
+}
+
+// -------------------------------------------------------------
+// Study / Material-Based Teaching Section
+// -------------------------------------------------------------
+let activeSubjectId = 1;
+let currentStudyTopic = null;
+
+async function loadStudyWorkspace() {
+  await Promise.all([
+    loadStudySubjects(),
+    loadStudyProgress()
+  ]);
+}
+
+async function loadStudySubjects() {
+  try {
+    const res = await fetch("/api/v1/subjects");
+    if (!res.ok) return;
+    const subjects = await res.json();
+    const select = document.getElementById("study-subject-select");
+    const badge = document.getElementById("study-active-subject-badge");
+    
+    if (select && subjects.length > 0) {
+      select.innerHTML = subjects.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
+      activeSubjectId = subjects[0].id;
+      if (badge) badge.textContent = `Subject: ${subjects[0].name}`;
+      await loadSubjectSyllabus(activeSubjectId);
+    }
+  } catch (e) {
+    console.warn("Failed to load study subjects:", e);
+  }
+}
+
+async function loadSubjectSyllabus(subId) {
+  const treeBox = document.getElementById("study-syllabus-tree");
+  if (!treeBox) return;
+
+  try {
+    const res = await fetch(`/api/v1/subjects/${subId}`);
+    if (!res.ok) {
+      treeBox.innerHTML = `<div class="text-muted" style="text-align:center; padding:15px; font-size:0.82rem;">No syllabus units loaded yet. Drop a syllabus or notes on the left.</div>`;
+      return;
+    }
+    const data = await res.json();
+    const units = data.units || [];
+    if (units.length === 0) {
+      treeBox.innerHTML = `<div class="text-muted" style="text-align:center; padding:15px; font-size:0.82rem;">No units in syllabus. Upload material to index topics.</div>`;
+      return;
+    }
+
+    let html = "";
+    units.forEach((unit, uIdx) => {
+      html += `
+        <div class="syllabus-unit-group" style="margin-bottom:12px;">
+          <div style="font-weight:600; font-size:0.82rem; color:var(--text-accent); margin-bottom:6px;">
+            Unit ${unit.unit_order || (uIdx + 1)}: ${escapeHtml(unit.title)}
+          </div>
+          <div style="display:flex; flex-direction:column; gap:4px; padding-left:8px;">
+      `;
+      (unit.topics || []).forEach(t => {
+        const isCurrent = currentStudyTopic && currentStudyTopic.toLowerCase() === t.title.toLowerCase();
+        html += `
+          <button class="syllabus-topic-item ${isCurrent ? 'active' : ''}" data-topic-title="${escapeHtml(t.title)}" style="text-align:left; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:6px 10px; font-size:0.8rem; cursor:pointer; color:var(--text-light); transition:all 0.2s ease;">
+            📘 ${escapeHtml(t.title)}
+          </button>
+        `;
+      });
+      html += `</div></div>`;
+    });
+    treeBox.innerHTML = html;
+
+    // Attach click listeners to syllabus topics
+    treeBox.querySelectorAll(".syllabus-topic-item").forEach(item => {
+      item.addEventListener("click", async () => {
+        const topicTitle = item.getAttribute("data-topic-title");
+        await selectStudyTopic(topicTitle);
+      });
+    });
+  } catch (e) {
+    console.warn("Failed to load subject syllabus:", e);
+    treeBox.innerHTML = `<div class="text-muted" style="text-align:center; padding:15px;">Error loading syllabus.</div>`;
+  }
+}
+
+async function selectStudyTopic(topicTitle) {
+  currentStudyTopic = topicTitle;
+  const header = document.getElementById("study-current-topic-title");
+  if (header) header.textContent = `Current Topic: ${topicTitle}`;
+
+  // Highlight in syllabus tree
+  document.querySelectorAll(".syllabus-topic-item").forEach(b => {
+    b.classList.toggle("active", b.getAttribute("data-topic-title") === topicTitle);
+  });
+
+  try {
+    await fetch(`/api/v1/subjects/${activeSubjectId}/select?student_id=${currentStudentId}`, {
+      method: "POST"
+    });
+  } catch (e) {}
+
+  appendStudyMessage("user", `Teach me ${topicTitle}`);
+  await sendStudyMessageDirect(`Teach me ${topicTitle}`);
+}
+
+async function loadStudyProgress() {
+  const container = document.getElementById("study-progress-container");
+  if (!container) return;
+
+  try {
+    const res = await fetch(`/api/v1/subjects/${activeSubjectId}/progress?student_id=${currentStudentId}`);
+    if (!res.ok) return;
+    const prog = await res.json();
+
+    const weakTopics = (prog.weak_topics_json ? JSON.parse(prog.weak_topics_json) : []) || [];
+    let html = `
+      <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
+        <span>Subject Mastery:</span>
+        <strong style="color:var(--accent-glow);">${prog.mastery_score || 0}%</strong>
+      </div>
+      <div class="progress-bar-bg" style="height:6px; background:rgba(255,255,255,0.08); border-radius:3px; margin-bottom:14px; overflow:hidden;">
+        <div style="height:100%; width:${Math.min(100, Math.max(0, prog.mastery_score || 0))}%; background:var(--accent-glow);"></div>
+      </div>
+    `;
+
+    if (weakTopics.length > 0) {
+      html += `
+        <div style="margin-top:10px;">
+          <div style="color:#f43f5e; font-weight:600; font-size:0.8rem; margin-bottom:6px;">⚠️ Weak Topics Requiring Focus:</div>
+          <div style="display:flex; flex-wrap:wrap; gap:6px;">
+            ${weakTopics.map(w => `<span class="tag tag-danger" style="font-size:0.75rem;">${escapeHtml(w)}</span>`).join("")}
+          </div>
+        </div>
+      `;
+    } else {
+      html += `<div class="text-muted" style="font-size:0.78rem;">No weak topics flagged yet. Answer quizzes to identify challenge areas.</div>`;
+    }
+
+    container.innerHTML = html;
+  } catch (e) {
+    console.warn("Failed to load study progress:", e);
+  }
+}
+
+function appendStudyMessage(role, text) {
+  const container = document.getElementById("study-messages-container");
+  if (!container) return;
+
+  const msgDiv = document.createElement("div");
+  msgDiv.className = `chat-msg ${role === "user" ? "user-msg" : "mizo-msg"}`;
+  msgDiv.style.marginBottom = "10px";
+  msgDiv.style.display = "flex";
+  msgDiv.style.flexDirection = "column";
+  msgDiv.style.alignItems = role === "user" ? "flex-end" : "flex-start";
+
+  msgDiv.innerHTML = `
+    <div style="max-width:85%; background:${role === 'user' ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255, 255, 255, 0.05)'}; border:1px solid ${role === 'user' ? 'rgba(99, 102, 241, 0.4)' : 'rgba(255, 255, 255, 0.1)'}; border-radius:10px; padding:10px 14px; font-size:0.88rem; line-height:1.45;">
+      <div style="font-size:0.7rem; font-weight:600; color:var(--text-muted); margin-bottom:4px;">
+        ${role === 'user' ? 'You' : '📚 Study Tutor'}
+      </div>
+      <div>${escapeHtml(text)}</div>
+    </div>
+  `;
+
+  // Remove placeholder if present
+  if (container.querySelector(".text-muted")) {
+    container.innerHTML = "";
+  }
+
+  container.appendChild(msgDiv);
+  container.scrollTop = container.scrollHeight;
+}
+
+async function sendStudyMessageDirect(msg) {
+  if (!msg) return;
+  try {
+    const res = await fetch("/api/v1/esp32/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: msg,
+        student_id: currentStudentId,
+        session_id: activeSessionId,
+        mode: "tutor",
+        is_typed_text: true
+      })
+    });
+    const data = await res.json();
+    if (data.response) {
+      appendStudyMessage("mizo", data.response);
+    }
+    loadStudyProgress();
+  } catch (err) {
+    console.error("Study chat error:", err);
+  }
+}
+
+function setupStudySectionEventListeners() {
+  // Quick Action pills
+  document.querySelectorAll("[data-tutor-cmd]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const cmd = btn.getAttribute("data-tutor-cmd");
+      appendStudyMessage("user", cmd);
+      await sendStudyMessageDirect(cmd);
+    });
+  });
+
+  // Study text input
+  const input = document.getElementById("study-text-input");
+  const sendBtn = document.getElementById("btn-study-send");
+  if (sendBtn && input) {
+    const sendHandler = async () => {
+      const val = input.value.trim();
+      if (!val) return;
+      input.value = "";
+      appendStudyMessage("user", val);
+      await sendStudyMessageDirect(val);
+    };
+    sendBtn.addEventListener("click", sendHandler);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendHandler();
+    });
+  }
+
+  // Refresh button
+  const refreshBtn = document.getElementById("btn-study-refresh");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", () => {
+      loadStudyWorkspace();
+      showToast("Study material refreshed!");
+    });
+  }
+
+  // Clear / New Study Session button
+  const clearSessionBtn = document.getElementById("btn-study-clear-session");
+  if (clearSessionBtn) {
+    clearSessionBtn.addEventListener("click", async () => {
+      try {
+        await fetch(`/api/v1/subjects/session/reset?student_id=${currentStudentId}`, { method: "POST" });
+        const container = document.getElementById("study-messages-container");
+        if (container) {
+          container.innerHTML = `<div class="text-muted" style="text-align:center; padding:30px;">📚 Fresh study session started! Ask any concept from your syllabus.</div>`;
+        }
+        showToast("New Study Session started! Old tutor context cleared.");
+      } catch (e) {
+        showToast("Error resetting study session", true);
+      }
+    });
+  }
+
+  // Subject select dropdown
+  const subjectSelect = document.getElementById("study-subject-select");
+  if (subjectSelect) {
+    subjectSelect.addEventListener("change", async (e) => {
+      activeSubjectId = parseInt(e.target.value, 10);
+      const opt = e.target.options[e.target.selectedIndex];
+      const badge = document.getElementById("study-active-subject-badge");
+      if (badge && opt) badge.textContent = `Subject: ${opt.text}`;
+      await loadSubjectSyllabus(activeSubjectId);
+      await loadStudyProgress();
+    });
+  }
+
+  // Material dropzone & file upload
+  const dropzone = document.getElementById("study-pdf-dropzone");
+  const fileInput = document.getElementById("study-file-input");
+  const statusEl = document.getElementById("study-upload-status");
+
+  if (dropzone && fileInput) {
+    dropzone.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      if (statusEl) statusEl.innerHTML = `<span style="color:#818cf8;">⏳ Uploading and indexing ${escapeHtml(file.name)}...</span>`;
+
+      try {
+        if (file.name.endsWith(".json")) {
+          const reader = new FileReader();
+          reader.onload = async (evt) => {
+            try {
+              const syllabusJson = JSON.parse(evt.target.result);
+              const res = await fetch("/api/v1/subjects/load", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(syllabusJson)
+              });
+              if (res.ok) {
+                if (statusEl) statusEl.innerHTML = `<span style="color:#34d399;">✓ Syllabus loaded successfully!</span>`;
+                showToast("Syllabus loaded successfully!");
+                await loadStudyWorkspace();
+              } else {
+                throw new Error("Failed to load syllabus JSON");
+              }
+            } catch (err) {
+              if (statusEl) statusEl.innerHTML = `<span style="color:#f43f5e;">Upload failed: ${err.message}</span>`;
+            }
+          };
+          reader.readAsText(file);
+        } else {
+          const formData = new FormData();
+          formData.append("file", file);
+          const res = await fetch("/api/v1/knowledge/upload", {
+            method: "POST",
+            body: formData
+          });
+          if (res.ok) {
+            if (statusEl) statusEl.innerHTML = `<span style="color:#34d399;">✓ Study document uploaded & indexed!</span>`;
+            showToast("Document indexed for study agent!");
+          } else {
+            throw new Error("Upload failed");
+          }
+        }
+      } catch (err) {
+        if (statusEl) statusEl.innerHTML = `<span style="color:#f43f5e;">Error uploading material</span>`;
+      }
+    });
+  }
+}
+
+// -------------------------------------------------------------
+// Speech / Seminar Practice Section
+// -------------------------------------------------------------
+let speechTimerInterval = null;
+let speechElapsedSeconds = 0;
+let speechAllowedSeconds = 180;
+let speechTopic = "";
+let speechRequiredPoints = [];
+
+function loadSpeechWorkspace() {
+  updateSpeechPointsPreview();
+}
+
+function updateSpeechPointsPreview() {
+  const preview = document.getElementById("speech-points-preview");
+  if (!preview) return;
+
+  if (!speechTopic && speechRequiredPoints.length === 0) {
+    preview.innerHTML = `<span class="text-muted">No topic configured yet. Enter topic and points above.</span>`;
+    return;
+  }
+
+  let html = `
+    <div style="font-weight:600; color:var(--text-light); margin-bottom:8px;">
+      🎤 ${escapeHtml(speechTopic || "Presentation Topic")}
+    </div>
+    <div style="display:flex; flex-direction:column; gap:6px;">
+  `;
+  speechRequiredPoints.forEach((pt, idx) => {
+    html += `
+      <div style="display:flex; align-items:center; gap:8px; font-size:0.83rem;">
+        <span style="color:var(--text-accent);">[${idx + 1}]</span>
+        <span>${escapeHtml(pt)}</span>
+      </div>
+    `;
+  });
+  html += `</div>`;
+  preview.innerHTML = html;
+}
+
+function formatDurationDisplay(sec) {
+  const m = Math.floor(sec / 60).toString().padStart(2, "0");
+  const s = (sec % 60).toString().padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+function setupSpeechSectionEventListeners() {
+  const saveBtn = document.getElementById("btn-save-speech-setup");
+  const topicInput = document.getElementById("speech-topic-input");
+  const pointsInput = document.getElementById("speech-points-input");
+  const durationSelect = document.getElementById("speech-duration-select");
+
+  if (saveBtn) {
+    saveBtn.addEventListener("click", async () => {
+      speechTopic = topicInput ? topicInput.value.trim() : "";
+      const rawPoints = pointsInput ? pointsInput.value.trim() : "";
+      speechRequiredPoints = rawPoints ? rawPoints.split("\n").map(p => p.trim()).filter(Boolean) : [];
+      speechAllowedSeconds = durationSelect ? parseInt(durationSelect.value, 10) : 180;
+
+      if (!speechTopic) {
+        showToast("Please enter a speech or presentation topic", true);
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/v1/speech/setup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            student_id: currentStudentId,
+            topic: speechTopic,
+            required_points: speechRequiredPoints,
+            allowed_duration_seconds: speechAllowedSeconds
+          })
+        });
+        if (res.ok) {
+          const badge = document.getElementById("speech-session-state-badge");
+          if (badge) badge.textContent = "State: READY";
+          const timerDisplay = document.getElementById("speech-live-timer");
+          if (timerDisplay) timerDisplay.textContent = `00:00 / ${formatDurationDisplay(speechAllowedSeconds)}`;
+          updateSpeechPointsPreview();
+          showToast("Rehearsal stage configured! Ready to start.");
+        }
+      } catch (e) {
+        showToast("Failed to save speech setup", true);
+      }
+    });
+  }
+
+  // Start Rehearsal
+  const startBtn = document.getElementById("btn-speech-start");
+  const finishBtn = document.getElementById("btn-speech-finish");
+  const timerDisplay = document.getElementById("speech-live-timer");
+  const hudBadge = document.getElementById("speech-hud-state");
+  const hintEl = document.getElementById("speech-status-hint");
+
+  if (startBtn && finishBtn) {
+    startBtn.addEventListener("click", () => {
+      if (speechTimerInterval) clearInterval(speechTimerInterval);
+      speechElapsedSeconds = 0;
+
+      if (hudBadge) {
+        hudBadge.textContent = "RECORDING";
+        hudBadge.style.background = "#f43f5e";
+      }
+      if (hintEl) hintEl.textContent = "Rehearsal in progress... Speak clearly into your microphone.";
+
+      startBtn.disabled = true;
+      finishBtn.disabled = false;
+
+      speechTimerInterval = setInterval(() => {
+        speechElapsedSeconds++;
+        if (timerDisplay) {
+          timerDisplay.textContent = `${formatDurationDisplay(speechElapsedSeconds)} / ${formatDurationDisplay(speechAllowedSeconds)}`;
+        }
+        if (speechElapsedSeconds >= speechAllowedSeconds) {
+          if (hintEl) hintEl.textContent = "Time is up! Wrap up your speech and click Finish & Analyze.";
+        }
+      }, 1000);
+    });
+
+    finishBtn.addEventListener("click", async () => {
+      if (speechTimerInterval) {
+        clearInterval(speechTimerInterval);
+        speechTimerInterval = null;
+      }
+      startBtn.disabled = false;
+      finishBtn.disabled = true;
+
+      if (hudBadge) {
+        hudBadge.textContent = "ANALYZING";
+        hudBadge.style.background = "#818cf8";
+      }
+      if (hintEl) hintEl.textContent = "Analyzing presentation delivery, rubric coverage, and pacing...";
+
+      const transcriptEl = document.getElementById("speech-transcript-input");
+      const transcript = transcriptEl && transcriptEl.value.trim()
+        ? transcriptEl.value.trim()
+        : `Today I will speak about ${speechTopic || "my topic"}. ${speechRequiredPoints.join(". ")}. In conclusion, this covers our main points.`;
+
+      await analyzeSpeechRehearsal(transcript);
+    });
+  }
+
+  // Analyze Transcript Button
+  const analyzeBtn = document.getElementById("btn-analyze-transcript");
+  if (analyzeBtn) {
+    analyzeBtn.addEventListener("click", async () => {
+      const transcriptEl = document.getElementById("speech-transcript-input");
+      const transcript = transcriptEl ? transcriptEl.value.trim() : "";
+      if (!transcript) {
+        showToast("Please enter a speech transcript to analyze", true);
+        return;
+      }
+      await analyzeSpeechRehearsal(transcript);
+    });
+  }
+
+  // New Rehearsal Button
+  const newBtn = document.getElementById("btn-speech-new");
+  if (newBtn) {
+    newBtn.addEventListener("click", () => {
+      if (speechTimerInterval) clearInterval(speechTimerInterval);
+      speechTimerInterval = null;
+      speechElapsedSeconds = 0;
+      speechTopic = "";
+      speechRequiredPoints = [];
+
+      if (topicInput) topicInput.value = "";
+      if (pointsInput) pointsInput.value = "";
+      if (timerDisplay) timerDisplay.textContent = "00:00 / 03:00";
+      if (hudBadge) {
+        hudBadge.textContent = "READY";
+        hudBadge.style.background = "";
+      }
+      const badge = document.getElementById("speech-session-state-badge");
+      if (badge) badge.textContent = "State: SETUP";
+      const feedback = document.getElementById("speech-feedback-container");
+      if (feedback) feedback.style.display = "none";
+      updateSpeechPointsPreview();
+      showToast("Stage cleared for a new rehearsal!");
+    });
+  }
+}
+
+async function analyzeSpeechRehearsal(transcript) {
+  const container = document.getElementById("speech-feedback-container");
+  const hudBadge = document.getElementById("speech-hud-state");
+  const hintEl = document.getElementById("speech-status-hint");
+
+  try {
+    const res = await fetch("/api/v1/speech/analyze-transcript", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        student_id: currentStudentId,
+        transcript: transcript,
+        topic: speechTopic || "Presentation",
+        required_points: speechRequiredPoints
+      })
+    });
+
+    if (!res.ok) throw new Error("Analysis failed");
+    const data = await res.json();
+    const fb = data.feedback || {};
+
+    if (hudBadge) {
+      hudBadge.textContent = "COMPLETED";
+      hudBadge.style.background = "#10b981";
+    }
+    if (hintEl) hintEl.textContent = "Rehearsal feedback generated below!";
+
+    if (container) {
+      container.style.display = "block";
+      const overall = fb.overall_score || fb.score || 85;
+      const missed = fb.missed_points || [];
+
+      container.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:12px; margin-bottom:14px;">
+          <h4 style="margin:0;">🎤 Rehearsal Rubric Score</h4>
+          <span class="tag tag-accent" style="font-size:1.1rem; padding:4px 12px;">${overall} / 100</span>
+        </div>
+        <div class="grid-2-col" style="gap:14px; margin-bottom:14px;">
+          <div>
+            <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Structure & Delivery</div>
+            <strong style="color:#34d399;">${fb.structure_score || 80}/100</strong>
+          </div>
+          <div>
+            <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Grammar & Vocabulary</div>
+            <strong style="color:#818cf8;">${fb.grammar_score || 85}/100</strong>
+          </div>
+        </div>
+        ${missed.length > 0 ? `
+          <div style="margin-bottom:12px;">
+            <div style="color:#f43f5e; font-size:0.82rem; font-weight:600; margin-bottom:4px;">⚠️ Missing Points to Rehearse:</div>
+            <div style="display:flex; flex-wrap:wrap; gap:6px;">
+              ${missed.map(m => `<span class="tag tag-danger" style="font-size:0.75rem;">${escapeHtml(m)}</span>`).join("")}
+            </div>
+          </div>
+        ` : `
+          <div style="color:#34d399; font-size:0.82rem; margin-bottom:12px;">✓ All key presentation checkpoints covered!</div>
+        `}
+        <div style="font-size:0.85rem; line-height:1.5; color:var(--text-light); background:rgba(255,255,255,0.02); padding:10px; border-radius:6px;">
+          <strong>Coach Summary:</strong> ${escapeHtml(fb.coach_summary || fb.summary || "Good delivery and pacing. Keep practicing to refine transitions.")}
+        </div>
+      `;
+    }
+  } catch (err) {
+    console.error("Speech analysis error:", err);
+    showToast("Error generating speech feedback", true);
+  }
+}
+

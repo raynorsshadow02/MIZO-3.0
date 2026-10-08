@@ -240,8 +240,10 @@ async def test_assessment_baseline_preservation_across_later_sessions():
 # -----------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_messages_saved_and_searchable_in_history():
-    with patch("app.services.llm_service.LLMService._call_groq", new_callable=AsyncMock) as mock_groq:
+    with patch("app.services.llm_service.LLMService._call_groq", new_callable=AsyncMock) as mock_groq, \
+         patch("app.services.llm_service.LLMService._call_ollama", new_callable=AsyncMock) as mock_ollama:
         mock_groq.return_value = ("Quantum physics explores the subatomic realm.", "llama-3.3-70b-versatile")
+        mock_ollama.return_value = ("Quantum physics explores the subatomic realm.", "llama3:latest")
         
         client.post("/api/v1/esp32/chat", json={
             "student_id": 1,
@@ -293,9 +295,9 @@ async def test_restarting_onboarding_preserves_history_and_archives_profile():
   "spoken_summary": "Great sample Alice!"
 }""", "llama-3.3-70b-versatile")
 
-        # Create an assessment record
+        # Create an assessment record with sufficient evidence length (>12 words)
         await personalization_service.run_speaking_assessment(
-            transcript="Alice speaking sample about books and writing styles.",
+            transcript="Alice speaking sample about books and writing styles for her upcoming novel project.",
             student_id=1,
             session_id="ses_alice_01",
             duration_seconds=62.0

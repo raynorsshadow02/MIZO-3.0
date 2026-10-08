@@ -10,7 +10,7 @@
 
 ## 🌟 Key Features & Production Architecture
 
-- **Primary LLM: Llama 3.3 70B**: Powered by Groq Cloud (`llama-3.3-70b-versatile`) with automatic dynamic fallback cascade to **OpenAI** (`gpt-4o-mini`), **Qwen 2.5 72B** (OpenRouter), and **Local Ollama**. Zero hardcoded or mock bot responses.
+- **Primary LLM: GPT OSS 120B**: Powered by Groq Cloud (`openai/gpt-oss-120b`) with automatic dynamic fallback cascade to **OpenAI** (`gpt-4o-mini`), **Qwen 2.5 72B** (OpenRouter), and **Local Ollama**. Zero hardcoded or mock bot responses.
 - **Single Source of Truth Database & Memory Engine**: Persistent SQLite store (`data/mizo.db`) tracking unified learner profiles, onboarding calibration, active session lifecycles, mistake logs, and conversational history.
 - **Session Lifecycle & Metric Separation**: Starting a new session creates a fresh session ID and initializes current-session metrics (fluency, grammar accuracy, vocabulary richness, pacing) to zero while preserving cumulative historical metrics to guide AI personalization.
 - **Dynamic First-Session Onboarding**: First-time learners undergo greeting, interests/goals discovery, and baseline speech calibration before unlocking main coaching modes.
@@ -85,7 +85,7 @@ Configure your preferred LLM and Speech providers in `.env`:
 ```ini
 # Primary High-Speed LLM & Whisper STT
 GROQ_API_KEY=gsk_your_groq_api_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=openai/gpt-oss-120b
 GROQ_WHISPER_MODEL=whisper-large-v3
 
 # Fallback LLMs

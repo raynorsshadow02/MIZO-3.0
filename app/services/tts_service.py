@@ -1,4 +1,5 @@
 import io
+import re
 import wave
 import uuid
 import struct
@@ -8,6 +9,26 @@ from pathlib import Path
 from typing import Optional, Tuple
 from app.config import settings
 from app.db.database import get_db_settings
+
+
+def map_tts_pronunciation(text: str) -> str:
+    """
+    Substitutes pronunciation-friendly phonetic representation strictly for the TTS audio generator.
+    The canonical project name 'Mizo' is preserved in all user-facing UI, databases, transcripts, and logs.
+    Edge-TTS pronounces 'Meezo' consistently and naturally as /ˈmiːzoʊ/ ('Mee-zo').
+    """
+    if not text:
+        return ""
+
+    def _replace_mizo(match):
+        w = match.group(0)
+        if w.isupper():
+            return "MEEZO"
+        if w[0].isupper():
+            return "Meezo"
+        return "meezo"
+
+    return re.sub(r'\b[Mm][Ii][Zz][Oo]\b', _replace_mizo, text)
 
 
 class TTSService:
@@ -53,15 +74,17 @@ class TTSService:
         output_path = settings.AUDIO_CACHE_DIR / filename
         mp3_temp_path = settings.AUDIO_CACHE_DIR / f"temp_{uuid.uuid4().hex[:8]}.mp3"
 
+        spoken_text = map_tts_pronunciation(text)
+
         try:
             # 1. Synthesize via Edge-TTS
             communicate = edge_tts.Communicate(
-                text=text,
+                text=spoken_text,
                 voice=selected_voice,
                 rate=selected_rate,
                 pitch=selected_pitch
             )
-            await communicate.save(str(mp3_temp_path))
+            await asyncio.wait_for(communicate.save(str(mp3_temp_path)), timeout=5.0)
 
             # 2. Convert or package as WAV for ESP32 MAX98357A
             # Try to decode MP3 into PCM if av or soundfile available, or provide clean WAV

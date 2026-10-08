@@ -34,9 +34,18 @@
       </div>
 
       <nav class="nav-menu">
+        <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); padding: 8px 12px 4px; font-weight: 700;">Agent Workspaces</div>
         <button class="nav-item active" data-tab="tab-simulator" id="nav-simulator-btn">
-          <span class="icon">🎙️</span> Onboarding & Voice Chat
+          <span class="icon">💬</span> Normal Chat
         </button>
+        <button class="nav-item" data-tab="tab-study" id="nav-study-btn">
+          <span class="icon">📚</span> Study
+        </button>
+        <button class="nav-item" data-tab="tab-speech" id="nav-speech-btn">
+          <span class="icon">🎤</span> Speech Practice
+        </button>
+
+        <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); padding: 12px 12px 4px; font-weight: 700;">Control & Analytics</div>
         <button class="nav-item" data-tab="tab-overview" id="nav-overview-btn">
           <span class="icon">📊</span> Overview & Status
         </button>
@@ -53,7 +62,7 @@
           <span class="icon">🔑</span> API Keys & AI Cascade
         </button>
         <button class="nav-item" data-tab="tab-knowledge" id="nav-knowledge-btn">
-          <span class="icon">📚</span> Knowledge Base (RAG)
+          <span class="icon">📁</span> Knowledge Base (RAG)
         </button>
         <button class="nav-item" data-tab="tab-devices" id="nav-devices-btn">
           <span class="icon">🔌</span> ESP32 Devices
@@ -162,28 +171,28 @@
                 <div class="progress-item">
                   <div class="progress-labels">
                     <span>Session Fluency</span>
-                    <strong id="session-fluency-text">0.0%</strong>
+                    <strong id="session-fluency-text">Not assessed yet</strong>
                   </div>
                   <div class="progress-bar"><div class="progress-fill fill-cyan" id="session-fluency-bar" style="width: 0%"></div></div>
                 </div>
                 <div class="progress-item">
                   <div class="progress-labels">
                     <span>Session Grammar Accuracy</span>
-                    <strong id="session-grammar-text">0.0%</strong>
+                    <strong id="session-grammar-text">Not assessed yet</strong>
                   </div>
                   <div class="progress-bar"><div class="progress-fill fill-indigo" id="session-grammar-bar" style="width: 0%"></div></div>
                 </div>
                 <div class="progress-item">
                   <div class="progress-labels">
                     <span>Session Vocabulary Complexity</span>
-                    <strong id="session-vocab-text">0.0%</strong>
+                    <strong id="session-vocab-text">Not assessed yet</strong>
                   </div>
                   <div class="progress-bar"><div class="progress-fill fill-emerald" id="session-vocab-bar" style="width: 0%"></div></div>
                 </div>
                 <div class="progress-item">
                   <div class="progress-labels">
                     <span>Session Speech Pacing</span>
-                    <strong id="session-pacing-text">0.0%</strong>
+                    <strong id="session-pacing-text">Not assessed yet</strong>
                   </div>
                   <div class="progress-bar"><div class="progress-fill fill-amber" id="session-pacing-bar" style="width: 0%"></div></div>
                 </div>
@@ -199,39 +208,43 @@
             <div class="card-header">
               <div>
                 <h3>Cumulative Historical Progress</h3>
-                <small class="text-muted">Long-term learning memory across all sessions</small>
+                <small class="text-muted" id="historical-progress-subtitle">Long-term learning memory calculated from completed assessments</small>
               </div>
-              <span class="tag" id="snap-student-grade">Grade 8</span>
+              <span class="tag" id="snap-student-grade">Student</span>
             </div>
             <div class="card-body">
               <div class="progress-list">
                 <div class="progress-item">
                   <div class="progress-labels">
                     <span>Historical Fluency</span>
-                    <strong id="snap-fluency">80.0%</strong>
+                    <strong id="snap-fluency">Not assessed yet</strong>
                   </div>
-                  <div class="progress-bar"><div class="progress-fill fill-cyan" id="bar-fluency" style="width: 80%"></div></div>
+                  <div class="progress-bar"><div class="progress-fill fill-cyan" id="bar-fluency" style="width: 0%"></div></div>
+                  <small class="text-muted" id="snap-source-fluency" style="font-size:0.75rem; display:block; margin-top:2px;">Source: No historical assessment</small>
                 </div>
                 <div class="progress-item">
                   <div class="progress-labels">
                     <span>Historical Grammar</span>
-                    <strong id="snap-grammar">75.0%</strong>
+                    <strong id="snap-grammar">Not assessed yet</strong>
                   </div>
-                  <div class="progress-bar"><div class="progress-fill fill-indigo" id="bar-grammar" style="width: 75%"></div></div>
+                  <div class="progress-bar"><div class="progress-fill fill-indigo" id="bar-grammar" style="width: 0%"></div></div>
+                  <small class="text-muted" id="snap-source-grammar" style="font-size:0.75rem; display:block; margin-top:2px;">Source: No historical assessment</small>
                 </div>
                 <div class="progress-item">
                   <div class="progress-labels">
                     <span>Historical Vocabulary</span>
-                    <strong id="snap-vocab">70.0%</strong>
+                    <strong id="snap-vocab">Not assessed yet</strong>
                   </div>
-                  <div class="progress-bar"><div class="progress-fill fill-emerald" id="bar-vocab" style="width: 70%"></div></div>
+                  <div class="progress-bar"><div class="progress-fill fill-emerald" id="bar-vocab" style="width: 0%"></div></div>
+                  <small class="text-muted" id="snap-source-vocab" style="font-size:0.75rem; display:block; margin-top:2px;">Source: No historical assessment</small>
                 </div>
                 <div class="progress-item">
                   <div class="progress-labels">
                     <span>Overall Confidence</span>
-                    <strong id="snap-conf">78.0%</strong>
+                    <strong id="snap-conf">Not assessed yet</strong>
                   </div>
-                  <div class="progress-bar"><div class="progress-fill fill-amber" id="bar-conf" style="width: 78%"></div></div>
+                  <div class="progress-bar"><div class="progress-fill fill-amber" id="bar-conf" style="width: 0%"></div></div>
+                  <small class="text-muted" id="snap-source-conf" style="font-size:0.75rem; display:block; margin-top:2px;">Source: No historical assessment</small>
                 </div>
               </div>
             </div>
@@ -294,16 +307,16 @@
             <!-- Two-Way Continuous Voice Mode Hero Banner (ChatGPT / AI Assistant Style) -->
             <div class="voice-mode-banner">
               <div class="voice-mode-controls">
-                <button class="btn-voice-mode hero-start-btn" id="btn-toggle-voice-mode">
+                <button class="btn-voice-mode hero-start-btn" id="btn-toggle-voice-mode" title="Manual activation override (hands-free wake listening is active by default)">
                   <span class="mode-icon">🎙️</span>
-                  <span id="voice-mode-label">Start Live Voice Conversation</span>
+                  <span id="voice-mode-label">Manual Voice Activation (Fallback)</span>
                 </button>
-                <span class="voice-state-badge wake-only" id="voice-state-badge">WAKE_ONLY (Standby)</span>
+                <span class="voice-state-badge wake-only" id="voice-state-badge">WAKE_LISTENING • Say "Hey Mizo"</span>
                 <div class="voice-activity-indicator" id="voice-activity-indicator">
                   <div class="volume-meter-wrapper" title="Live Microphone Volume Level">
                     <div class="volume-meter-bar" id="volume-meter-bar"></div>
                   </div>
-                  <span class="silence-badge" id="silence-status-badge">Ready to Start</span>
+                  <span class="silence-badge" id="silence-status-badge">Wake Listening Active</span>
                 </div>
               </div>
               <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
@@ -361,8 +374,7 @@
             <!-- Main Dialogue History Stream -->
             <div class="chat-conversation-container">
               <div class="chat-message-list" id="chat-messages-container">
-                <!-- Dialogue dynamically populated -->
-                <div class="text-muted" style="text-align:center; padding:40px;">Initializing Mizo dialogue...</div>
+                <div class="text-muted" style="text-align:center; padding:40px;" id="chat-idle-placeholder">💤 Mizo is in snooze mode.<br><small style="color:var(--text-dim); margin-top:8px; display:inline-block;">Say <strong>"Hey Mizo"</strong> to wake up and start onboarding.</small></div>
               </div>
             </div>
 
@@ -408,6 +420,222 @@
               <div class="assessment-details-content" id="latest-assessment-content">
                 <!-- Dynamically filled with dimension scores, honest notes, and strengths/weaknesses -->
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: STUDY / MATERIAL-BASED TEACHING -->
+      <section class="tab-pane" id="tab-study">
+        <div class="card" style="margin-bottom: 20px;">
+          <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <h3 style="display:flex; align-items:center; gap:8px;">
+                <span>📚</span> Study / Material-Based Teaching Agent
+              </h3>
+              <p class="text-muted" style="margin-top:4px;">
+                Upload your syllabus, PDF notes, or chapters. The Study Agent indexes your materials and teaches <strong>strictly from that content</strong>.
+              </p>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <span class="tag tag-accent" id="study-active-subject-badge">Subject: Robotics</span>
+              <button class="btn btn-secondary btn-sm" id="btn-study-refresh">🔄 Refresh Material</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="study-grid">
+          <!-- Left Column: Material Upload & Syllabus Hierarchy -->
+          <div style="display:flex; flex-direction:column; gap:20px;">
+            <!-- Document / Material Upload Card -->
+            <div class="card">
+              <div class="card-header">
+                <h4>📄 Upload Study Material</h4>
+              </div>
+              <div class="card-body">
+                <div class="dropzone" id="study-pdf-dropzone" style="padding:20px 14px; text-align:center;">
+                  <div class="drop-icon" style="font-size:2rem;">📑</div>
+                  <h5 style="margin:8px 0 4px;">Drop PDF Notes or Syllabus</h5>
+                  <p class="text-muted" style="font-size:0.75rem;">Supports PDF, TXT, or Syllabus JSON</p>
+                  <input type="file" id="study-file-input" accept=".pdf,.txt,.json,.md" style="display: none;">
+                </div>
+                <div id="study-upload-status" style="margin-top: 10px; font-size: 0.82rem;"></div>
+              </div>
+            </div>
+
+            <!-- Syllabus Units & Topics Explorer -->
+            <div class="card">
+              <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+                <h4>📖 Syllabus & Topics</h4>
+                <select id="study-subject-select" class="form-control form-control-sm" style="max-width:140px;">
+                  <option value="1">Robotics</option>
+                </select>
+              </div>
+              <div class="card-body">
+                <div class="syllabus-tree-box" id="study-syllabus-tree">
+                  <!-- Dynamically populated -->
+                  <div class="text-muted" style="text-align:center; padding:15px; font-size:0.82rem;">Loading syllabus topics...</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Subject Learning Progress Card -->
+            <div class="card">
+              <div class="card-header">
+                <h4>🎯 Learning Progress & Weak Topics</h4>
+              </div>
+              <div class="card-body">
+                <div id="study-progress-container" style="font-size:0.85rem;">
+                  <!-- Dynamically filled with weak topics, mastered topics -->
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Column: Interactive Study Teaching Dialogue Stream -->
+          <div class="card" style="display:flex; flex-direction:column; height:100%;">
+            <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <h4 id="study-current-topic-title">Current Topic: Forward Kinematics</h4>
+                <small class="text-muted" id="study-topic-sub">Grounded strictly in loaded material</small>
+              </div>
+              <button class="btn btn-secondary btn-sm" id="btn-study-clear-session" title="Start a fresh study session without old tutor context">
+                ✨ New Study Session
+              </button>
+            </div>
+            <div class="card-body" style="display:flex; flex-direction:column; flex:1;">
+              <!-- Quick Action Bar -->
+              <div class="tutor-action-bar">
+                <button class="tutor-pill-btn" data-tutor-cmd="Explain it simply">💡 Explain Simply</button>
+                <button class="tutor-pill-btn" data-tutor-cmd="Give me an example">🔍 Practical Example</button>
+                <button class="tutor-pill-btn" data-tutor-cmd="Quiz me">📝 Quiz Me</button>
+                <button class="tutor-pill-btn" data-tutor-cmd="Revise this">🔄 Revise Topic</button>
+                <button class="tutor-pill-btn" data-tutor-cmd="Exam prep">🎓 Exam Prep</button>
+                <button class="tutor-pill-btn" data-tutor-cmd="Move to the next topic">⏭️ Next Topic</button>
+              </div>
+
+              <!-- Study Dialogue Stream -->
+              <div class="chat-conversation-container" style="min-height:360px; max-height:450px;">
+                <div class="chat-message-list" id="study-messages-container">
+                  <div class="text-muted" style="text-align:center; padding:30px;">
+                    📚 Ready to study! Ask any concept from your syllabus or choose an action above.
+                  </div>
+                </div>
+              </div>
+
+              <!-- Study Input -->
+              <div class="sim-input-group" style="margin-top:14px;">
+                <input type="text" id="study-text-input" placeholder="Ask about this topic, answer quiz, or request explanation..." class="form-control">
+                <button class="btn btn-primary" id="btn-study-send">Ask Tutor ➔</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: SPEECH / SEMINAR PRACTICE -->
+      <section class="tab-pane" id="tab-speech">
+        <div class="card" style="margin-bottom: 20px;">
+          <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <h3 style="display:flex; align-items:center; gap:8px;">
+                <span>🎤</span> Speech & Seminar Practice Agent
+              </h3>
+              <p class="text-muted" style="margin-top:4px;">
+                TED-talk and seminar rehearsal coach. Set topic, required points, and duration, then rehearse with real-time feedback.
+              </p>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <span class="tag tag-accent" id="speech-session-state-badge">State: SETUP</span>
+              <button class="btn btn-secondary btn-sm" id="btn-speech-new">🔄 New Rehearsal</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="speech-grid">
+          <!-- Left Column: Rehearsal Setup & Checkpoints -->
+          <div style="display:flex; flex-direction:column; gap:20px;">
+            <!-- Setup Card -->
+            <div class="card">
+              <div class="card-header">
+                <h4>🎯 Rehearsal Setup</h4>
+              </div>
+              <div class="card-body">
+                <form id="speech-setup-form" onsubmit="return false;">
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label>Speech / Seminar Topic:</label>
+                    <input type="text" id="speech-topic-input" class="form-control" placeholder="e.g. 6-DOF Robotic Arm Dynamics">
+                  </div>
+                  <div class="form-group" style="margin-bottom:12px;">
+                    <label>Required Points to Cover (one per line):</label>
+                    <textarea id="speech-points-input" rows="3" class="form-control" placeholder="Forward Kinematics&#10;Inverse Kinematics&#10;Practical Applications"></textarea>
+                  </div>
+                  <div class="form-group" style="margin-bottom:14px;">
+                    <label>Allowed Duration:</label>
+                    <select id="speech-duration-select" class="form-control">
+                      <option value="60">1 Minute (Elevator Pitch / Summary)</option>
+                      <option value="120">2 Minutes (Short Seminar)</option>
+                      <option value="180" selected>3 Minutes (Standard Rehearsal)</option>
+                      <option value="300">5 Minutes (Keynote Presentation)</option>
+                    </select>
+                  </div>
+                  <button class="btn btn-primary" id="btn-save-speech-setup" style="width:100%;">
+                    ✓ Save Setup & Prepare Stage
+                  </button>
+                </form>
+              </div>
+            </div>
+
+            <!-- Required Points Checklist -->
+            <div class="card">
+              <div class="card-header">
+                <h4>📋 Topic & Points Checklist</h4>
+              </div>
+              <div class="card-body">
+                <div class="speech-points-checklist" id="speech-points-preview">
+                  <span class="text-muted">No topic configured yet. Enter topic and points above.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Column: Live Stage & Evaluation -->
+          <div style="display:flex; flex-direction:column; gap:20px;">
+            <!-- Stage Timer HUD -->
+            <div class="speech-timer-stage">
+              <span class="voice-state-badge" id="speech-hud-state">READY</span>
+              <div class="speech-timer-display" id="speech-live-timer">00:00 / 03:00</div>
+              <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:16px;" id="speech-status-hint">
+                Click "Start Recording" or say "start" to begin your presentation.
+              </div>
+              <div style="display:flex; justify-content:center; gap:12px; flex-wrap:wrap;">
+                <button class="btn btn-primary" id="btn-speech-start" style="min-width:140px;">
+                  ▶️ Start Rehearsal
+                </button>
+                <button class="btn btn-secondary" id="btn-speech-finish" style="min-width:140px; color:#f43f5e;" disabled>
+                  ⏹️ Finish & Analyze
+                </button>
+              </div>
+            </div>
+
+            <!-- Transcript Submission / Manual Input -->
+            <div class="card">
+              <div class="card-header">
+                <h4>🎙️ Speech Transcript & Analysis</h4>
+              </div>
+              <div class="card-body">
+                <textarea id="speech-transcript-input" rows="3" class="form-control" placeholder="Live transcript will stream here, or paste transcript to evaluate..."></textarea>
+                <div style="display:flex; justify-content:flex-end; margin-top:10px;">
+                  <button class="btn btn-secondary btn-sm" id="btn-analyze-transcript">
+                    🔍 Analyze Transcript
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Detailed Rubric Feedback Report -->
+            <div class="speech-feedback-card" id="speech-feedback-container" style="display:none;">
+              <!-- Dynamically populated with coverage, structure, grammar, fluency, improvements -->
             </div>
           </div>
         </div>
@@ -484,7 +712,7 @@
             <div class="provider-cards">
               <div class="provider-card active" data-provider="groq" id="prov-groq">
                 <div class="prov-badge">Primary</div>
-                <h4>⚡ Groq (Llama 3.3 70B)</h4>
+                <h4>⚡ Groq (GPT OSS 120B)</h4>
                 <p>Ultra-low latency (~250ms). Primary high-speed LLM engine.</p>
               </div>
               <div class="provider-card" data-provider="openai" id="prov-openai">
@@ -506,44 +734,90 @@
 
             <div class="key-inputs-section">
               <div class="form-group">
-                <label>Groq API Key:</label>
+                <label>Groq API Key (GPT OSS 120B / LPU):</label>
                 <div class="input-with-action">
                   <input type="password" id="input-groq-key" class="form-control" placeholder="gsk_...">
-                  <button class="btn-toggle-key" data-target="input-groq-key">👁️</button>
+                  <button class="btn-toggle-key" data-target="input-groq-key" title="Toggle visibility">👁️</button>
+                  <button class="btn-test-single-key btn btn-secondary btn-sm" data-provider="groq" title="Test Groq connection">⚡ Test</button>
+                  <button class="btn-clear-key btn btn-secondary btn-sm" data-target="input-groq-key" data-provider="groq" title="Clear saved Groq key">🗑️ Clear</button>
                 </div>
                 <small class="text-muted" id="groq-key-status">Status: Not set</small>
               </div>
 
               <div class="form-group">
                 <label>Groq LLM Model:</label>
-                <input type="text" id="input-groq-model" class="form-control" value="llama-3.3-70b-versatile">
+                <div class="input-with-action">
+                  <input type="text" id="input-groq-model" list="groq-model-list" class="form-control" value="openai/gpt-oss-120b" placeholder="openai/gpt-oss-120b">
+                  <button class="btn btn-secondary btn-sm" id="btn-refresh-groq-models" type="button" title="Fetch live models from Groq">🔄 Fetch Models</button>
+                </div>
+                <datalist id="groq-model-list">
+                  <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Flagship Production - Recommended)</option>
+                  <option value="openai/gpt-oss-20b">openai/gpt-oss-20b (High-Speed Production)</option>
+                  <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (Fast Production)</option>
+                </datalist>
+                <small class="text-muted" id="groq-model-status">Select or enter a verified production model ID.</small>
               </div>
 
               <div class="form-group">
-                <label>OpenAI API Key:</label>
+                <label>OpenAI API Key (GPT-4o Mini):</label>
                 <div class="input-with-action">
                   <input type="password" id="input-openai-key" class="form-control" placeholder="sk-...">
-                  <button class="btn-toggle-key" data-target="input-openai-key">👁️</button>
+                  <button class="btn-toggle-key" data-target="input-openai-key" title="Toggle visibility">👁️</button>
+                  <button class="btn-test-single-key btn btn-secondary btn-sm" data-provider="openai" title="Test OpenAI connection">⚡ Test</button>
+                  <button class="btn-clear-key btn btn-secondary btn-sm" data-target="input-openai-key" data-provider="openai" title="Clear saved OpenAI key">🗑️ Clear</button>
                 </div>
                 <small class="text-muted" id="openai-key-status">Status: Not set</small>
               </div>
 
               <div class="form-group">
                 <label>OpenAI Model:</label>
-                <input type="text" id="input-openai-model" class="form-control" value="gpt-4o-mini">
+                <input type="text" id="input-openai-model" list="openai-model-list" class="form-control" value="gpt-4o-mini">
+                <datalist id="openai-model-list">
+                  <option value="gpt-4o-mini">gpt-4o-mini (Fast & Efficient)</option>
+                  <option value="gpt-4o">gpt-4o (High Intelligence)</option>
+                  <option value="gpt-4-turbo">gpt-4-turbo</option>
+                </datalist>
+                <small class="text-muted">Supported OpenAI chat completion model.</small>
               </div>
 
               <div class="form-group">
                 <label>Qwen / OpenRouter API Key:</label>
                 <div class="input-with-action">
                   <input type="password" id="input-qwen-key" class="form-control" placeholder="sk-or-v1-...">
-                  <button class="btn-toggle-key" data-target="input-qwen-key">👁️</button>
+                  <button class="btn-toggle-key" data-target="input-qwen-key" title="Toggle visibility">👁️</button>
+                  <button class="btn-test-single-key btn btn-secondary btn-sm" data-provider="qwen" title="Test OpenRouter connection">⚡ Test</button>
+                  <button class="btn-clear-key btn btn-secondary btn-sm" data-target="input-qwen-key" data-provider="qwen" title="Clear saved Qwen key">🗑️ Clear</button>
                 </div>
+                <small class="text-muted" id="qwen-key-status">Status: Not set</small>
+              </div>
+
+              <div class="form-group">
+                <label>Qwen / OpenRouter Model:</label>
+                <input type="text" id="input-qwen-model" list="qwen-model-list" class="form-control" value="qwen/qwen-2.5-72b-instruct">
+                <datalist id="qwen-model-list">
+                  <option value="qwen/qwen-2.5-72b-instruct">qwen/qwen-2.5-72b-instruct</option>
+                  <option value="qwen/qwen-2.5-32b-instruct">qwen/qwen-2.5-32b-instruct</option>
+                  <option value="meta-llama/llama-3.3-70b-instruct">meta-llama/llama-3.3-70b-instruct</option>
+                </datalist>
               </div>
 
               <div class="form-group">
                 <label>Ollama Base URL:</label>
-                <input type="text" id="input-ollama-url" class="form-control" value="http://localhost:11434">
+                <div class="input-with-action">
+                  <input type="text" id="input-ollama-url" class="form-control" value="http://localhost:11434">
+                  <button class="btn-test-single-key btn btn-secondary btn-sm" data-provider="ollama" title="Test Ollama connection">⚡ Test</button>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label>Ollama Model:</label>
+                <input type="text" id="input-ollama-model" list="ollama-model-list" class="form-control" value="llama3:latest">
+                <datalist id="ollama-model-list">
+                  <option value="llama3:latest">llama3:latest</option>
+                  <option value="qwen2.5:7b">qwen2.5:7b</option>
+                  <option value="mistral:latest">mistral:latest</option>
+                </datalist>
+                <small class="text-muted">Locally pulled model in Ollama.</small>
               </div>
             </div>
           </div>
@@ -794,7 +1068,7 @@
   <!-- Toast Notification -->
   <div class="toast" id="toast">Settings Saved</div>
 
-  <script src="/js/app.js"></script>
+  <script src="/js/app.js?v=3.0.2"></script>
 </body>
 </html>
 

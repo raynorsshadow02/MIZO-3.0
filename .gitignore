@@ -42,6 +42,12 @@ data/uploads/*
 .pytest_cache/
 .coverage
 htmlcov/
+scratch/
+scratch_*.py
+
+# Logs
+*.log
+data/*.log
 
 # IDE & OS
 .vscode/

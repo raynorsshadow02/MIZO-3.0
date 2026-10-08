@@ -50,11 +50,30 @@ async def test_llm_all_providers_fail_raises_exception():
          patch.object(LLMService, "_call_ollama", side_effect=Exception("Ollama down")):
 
         with pytest.raises(LLMServiceError) as exc_info:
-            await LLMService.generate_response(messages=messages)
+            await LLMService.generate_response(messages=messages, provider_override="groq")
 
         assert "All AI LLM providers failed" in str(exc_info.value)
         assert "groq" in exc_info.value.provider_errors
         assert "openai" in exc_info.value.provider_errors
+
+
+@pytest.mark.asyncio
+async def test_llm_simple_query_never_falls_back_to_groq():
+    """Verify that when Ollama fails for a normal question, it only falls back to OpenRouter and NEVER Groq."""
+    messages = [{"role": "user", "content": "Hi there, how are you?"}]
+
+    with patch.object(LLMService, "_call_ollama", side_effect=Exception("Ollama offline")), \
+         patch.object(LLMService, "_call_qwen", new_callable=AsyncMock) as mock_qwen, \
+         patch.object(LLMService, "_call_groq", new_callable=AsyncMock) as mock_groq:
+
+        mock_qwen.return_value = ("Hello! I am doing great.", "openrouter/free")
+
+        result = await LLMService.generate_response(messages=messages)
+
+        assert result.text == "Hello! I am doing great."
+        assert result.provider == "qwen"
+        assert result.is_fallback is True
+        mock_groq.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -63,6 +82,6 @@ async def test_provider_connectivity_verification():
     with patch.object(LLMService, "_call_groq", new_callable=AsyncMock) as mock_groq:
         mock_groq.return_value = ("ready", "llama-3.3-70b-versatile")
         status = await LLMService.verify_provider_connectivity("groq")
-        assert status["status"] == "connected"
+        assert status["status"].lower() in ("connected", "ready")
         assert status["configured"] is True
         assert status["provider"] == "groq"
