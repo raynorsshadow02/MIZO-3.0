@@ -12,16 +12,16 @@
  *   VDD  --> 3.3V
  *   GND  --> GND
  *   L/R  --> GND (Left Channel)
+ *   SCK  --> GPIO 4  (Serial Clock / BCLK)
  *   WS   --> GPIO 5  (Word Select / LRCLK)
- *   SCK  --> GPIO 6  (Serial Clock / BCLK)
- *   SD   --> GPIO 4  (Serial Data / DOUT)
+ *   SD   --> GPIO 6  (Serial Data / DOUT)
  *
  * MAX98357A (Speaker DAC) -> ESP32-S3:
  *   VIN  --> 5V (or 3.3V)
  *   GND  --> GND
- *   BCLK --> GPIO 15 (Bit Clock)
- *   LRC  --> GPIO 16 (Left/Right Clock)
- *   DIN  --> GPIO 7  (Data In)
+ *   BCLK --> GPIO 18 (Bit Clock)
+ *   LRC  --> GPIO 21 (Left/Right Clock / WS)
+ *   DIN  --> GPIO 20 (Data In)
  *   GAIN --> GND (9dB gain)
  *
  * PUSH-TO-TALK BUTTON (Optional):
@@ -36,11 +36,11 @@
 // ---------------------------------------------------------------------------------
 // CONFIGURATION (Update with your Wi-Fi and Server IP)
 // ---------------------------------------------------------------------------------
-const char* WIFI_SSID     = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* WIFI_SSID     = "SHAHID-4G";
+const char* WIFI_PASSWORD = "kingshaikh";
 
 // Replace with your PC / Cloud Server IP address (Run 'ipconfig' on Windows to find it)
-const char* MIZO_SERVER_IP   = "192.168.1.100";
+const char* MIZO_SERVER_IP   = "192.168.1.192";
 const int   MIZO_SERVER_PORT = 8000;
 
 // Device API key (Configured in Mizo Admin Dashboard)
@@ -54,15 +54,15 @@ const char* DEVICE_API_KEY   = "mizo_esp32_secret_key_123";
 
 // I2S Microphone Pins (INMP441)
 #define I2S_MIC_PORT    I2S_NUM_0
-#define I2S_MIC_WS      5
-#define I2S_MIC_SCK     6
-#define I2S_MIC_SD      4
+#define I2S_MIC_SCK     4  // Serial Clock (BCLK)
+#define I2S_MIC_WS      5  // Word Select (LRCLK)
+#define I2S_MIC_SD      6  // Serial Data (DOUT)
 
 // I2S Speaker Pins (MAX98357A)
 #define I2S_SPK_PORT    I2S_NUM_1
-#define I2S_SPK_BCLK    15
-#define I2S_SPK_LRC     16
-#define I2S_SPK_DIN     7
+#define I2S_SPK_BCLK    18 // Bit Clock (BCLK)
+#define I2S_SPK_LRC     21 // Left/Right Clock (LRCLK / WS)
+#define I2S_SPK_DIN     20 // Data In (DIN)
 
 // Push-to-talk button
 #define BUTTON_PIN      0
@@ -157,10 +157,34 @@ void setupWavHeader(byte* header, int totalDataLen) {
 }
 
 // ---------------------------------------------------------------------------------
-// AUDIO PIPELINE
+// ---------------------------------------------------------------------------------
+// SPEAKER HARDWARE AUDIO TEST
+// ---------------------------------------------------------------------------------
+void testSpeaker() {
+    Serial.println("\n🔊 [MAX98357A] Running speaker hardware audio self-test...");
+    const int freq = 440; // 440Hz test tone
+    const int num_samples = SAMPLE_RATE / 2; // 0.5s duration
+    int16_t sample_buffer[256];
+    size_t bytes_written = 0;
+
+    int sample_idx = 0;
+    while (sample_idx < num_samples) {
+        int chunk_samples = min(256, num_samples - sample_idx);
+        for (int i = 0; i < chunk_samples; i++) {
+            float t = (float)(sample_idx + i) / SAMPLE_RATE;
+            sample_buffer[i] = (int16_t)(sin(2 * 3.14159265 * freq * t) * 6000); // 16-bit PCM amplitude
+        }
+        i2s_write(I2S_SPK_PORT, sample_buffer, chunk_samples * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+        sample_idx += chunk_samples;
+    }
+    Serial.println("✓ [MAX98357A] Speaker hardware self-test complete.");
+}
+
+// ---------------------------------------------------------------------------------
+// AUDIO PIPELINE (INMP441 Mic In -> Cloud -> MAX98357A Speaker Out)
 // ---------------------------------------------------------------------------------
 void recordAndSendAudio() {
-    Serial.println("\n🎙️ [INMP441] Recording speech from microphone...");
+    Serial.println("\n🎙️ [INMP441] Recording speech from external microphone...");
     size_t bytes_read = 0;
     size_t total_read = 0;
 
@@ -169,26 +193,24 @@ void recordAndSendAudio() {
         i2s_read(I2S_MIC_PORT, (char*)(record_buffer + total_read), to_read, &bytes_read, portMAX_DELAY);
         total_read += bytes_read;
     }
-    Serial.printf("✓ Audio recorded (%d bytes). Connecting to Mizo Cloud...\n", total_read);
+    Serial.printf("✓ Audio recorded (%d bytes). Connecting to Mizo Cloud (%s:%d)...\n", total_read, MIZO_SERVER_IP, MIZO_SERVER_PORT);
 
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("❌ Wi-Fi disconnected!");
         return;
     }
 
-    HTTPClient http;
-    String url = String("http://") + MIZO_SERVER_IP + ":" + String(MIZO_SERVER_PORT) + "/api/v1/esp32/audio?format=audio";
-    http.begin(url);
-    http.addHeader("X-Device-Key", DEVICE_API_KEY);
+    WiFiClient client;
+    if (!client.connect(MIZO_SERVER_IP, MIZO_SERVER_PORT)) {
+        Serial.printf("❌ Could not connect to Mizo Cloud Server at %s:%d\n", MIZO_SERVER_IP, MIZO_SERVER_PORT);
+        return;
+    }
 
-    // Multi-part form preparation
+    // Multipart form-data preparation
     String boundary = "----MizoESP32Boundary" + String(millis());
-    http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
-
     byte wavHeader[44];
     setupWavHeader(wavHeader, total_read);
 
-    // Build multipart body in stream
     String head = "--" + boundary + "\r\n" +
                   "Content-Disposition: form-data; name=\"audio\"; filename=\"inmp441.wav\"\r\n" +
                   "Content-Type: audio/wav\r\n\r\n";
@@ -198,38 +220,94 @@ void recordAndSendAudio() {
 
     int totalPayloadLen = head.length() + 44 + total_read + tail.length();
 
-    Serial.println("📡 Uploading audio stream to cloud...");
-    WiFiClient* stream = http.getStreamPtr();
-    
-    // Using raw POST stream
-    int httpResponseCode = http.POST((uint8_t*)NULL, totalPayloadLen);
+    Serial.println("📡 Uploading audio stream to /api/v1/esp32/audio?format=audio...");
+    client.print("POST /api/v1/esp32/audio?format=audio HTTP/1.1\r\n");
+    client.printf("Host: %s:%d\r\n", MIZO_SERVER_IP, MIZO_SERVER_PORT);
+    client.printf("X-Device-Key: %s\r\n", DEVICE_API_KEY);
+    client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary.c_str());
+    client.printf("Content-Length: %d\r\n", totalPayloadLen);
+    client.print("Connection: close\r\n\r\n");
 
-    if (httpResponseCode == HTTP_CODE_OK || httpResponseCode == 200) {
-        Serial.println("🔊 Cloud reply received! Streaming to MAX98357A speaker...");
-        int len = http.getSize();
-        WiFiClient* respStream = http.getStreamPtr();
+    // 1. Send multipart prefix
+    client.print(head);
 
-        // Skip 44 byte WAV header from server
-        uint8_t skipHeader[44];
-        respStream->readBytes(skipHeader, 44);
+    // 2. Send 44-byte WAV header
+    client.write(wavHeader, 44);
 
-        uint8_t audioChunk[1024];
-        size_t bytes_written;
+    // 3. Send audio payload in 1024-byte chunks
+    size_t offset = 0;
+    while (offset < total_read) {
+        size_t chunk = (total_read - offset > 1024) ? 1024 : (total_read - offset);
+        client.write(record_buffer + offset, chunk);
+        offset += chunk;
+    }
 
-        while (http.connected() && (len > 0 || len == -1)) {
-            size_t availableBytes = respStream->available();
-            if (availableBytes) {
-                int readBytes = respStream->readBytes(audioChunk, min(availableBytes, sizeof(audioChunk)));
-                i2s_write(I2S_SPK_PORT, audioChunk, readBytes, &bytes_written, portMAX_DELAY);
-                if (len > 0) len -= readBytes;
-            }
+    // 4. Send multipart suffix
+    client.print(tail);
+    client.flush();
+    Serial.println("✓ Audio uploaded! Waiting for Mizo voice reply...");
+
+    // Wait for response headers with 30s timeout
+    unsigned long timeout = millis() + 30000;
+    while (client.connected() && !client.available()) {
+        if (millis() > timeout) {
+            Serial.println("❌ Timeout waiting for server audio response.");
+            client.stop();
+            return;
+        }
+        delay(10);
+    }
+
+    // Read HTTP response status line
+    String statusLine = client.readStringUntil('\n');
+    statusLine.trim();
+    Serial.printf("Server response: %s\n", statusLine.c_str());
+
+    if (!statusLine.startsWith("HTTP/1.1 200") && !statusLine.startsWith("HTTP/1.0 200")) {
+        Serial.printf("❌ Server error response: %s\n", statusLine.c_str());
+        client.stop();
+        return;
+    }
+
+    // Skip HTTP headers
+    bool inHeader = true;
+    while (client.connected() && inHeader) {
+        String line = client.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) {
+            inHeader = false;
+            break;
+        }
+    }
+
+    // Stream incoming WAV audio directly to MAX98357A I2S DAC speaker
+    Serial.println("🔊 Cloud reply received! Streaming to MAX98357A speaker...");
+    uint8_t skipHeader[44];
+    size_t headerRead = 0;
+    while (headerRead < 44 && client.connected()) {
+        if (client.available()) {
+            skipHeader[headerRead++] = client.read();
+        } else {
             delay(1);
         }
-        Serial.println("✓ Spoken playback complete!");
-    } else {
-        Serial.printf("❌ Cloud Server Error: %d\n", httpResponseCode);
     }
-    http.end();
+
+    uint8_t audioChunk[1024];
+    size_t bytes_written = 0;
+    while (client.connected() || client.available()) {
+        size_t avail = client.available();
+        if (avail > 0) {
+            int toRead = min(avail, sizeof(audioChunk));
+            int readBytes = client.readBytes(audioChunk, toRead);
+            if (readBytes > 0) {
+                i2s_write(I2S_SPK_PORT, audioChunk, readBytes, &bytes_written, portMAX_DELAY);
+            }
+        } else {
+            delay(1);
+        }
+    }
+    client.stop();
+    Serial.println("✓ Spoken playback complete!");
 }
 
 // ---------------------------------------------------------------------------------
@@ -256,6 +334,9 @@ void setup() {
 
     setupI2SMicrophone();
     setupI2SSpeaker();
+
+    // Run working speaker test on startup
+    testSpeaker();
 
     // Connect to Wi-Fi
     Serial.printf("Connecting to Wi-Fi '%s'...", WIFI_SSID);
@@ -290,7 +371,26 @@ bool detectSpeechActivity() {
     return (avg_amplitude > SPEECH_THRESHOLD);
 }
 
+unsigned long lastHeartbeat = 0;
+
+void checkAndSendHeartbeat() {
+    if (millis() - lastHeartbeat >= 20000) {
+        lastHeartbeat = millis();
+        if (WiFi.status() == WL_CONNECTED) {
+            HTTPClient http;
+            String url = String("http://") + MIZO_SERVER_IP + ":" + String(MIZO_SERVER_PORT) + "/api/v1/esp32/ping";
+            http.begin(url);
+            http.addHeader("X-Device-Key", DEVICE_API_KEY);
+            int code = http.GET();
+            http.end();
+        }
+    }
+}
+
 void loop() {
+    // 0. Heartbeat to server so dashboard knows hardware is online
+    checkAndSendHeartbeat();
+
     // 1. Continuous Microphone Monitoring: user speaks -> audio captured automatically
     // The listener never completely shuts down. Button is NOT required.
     if (detectSpeechActivity()) {
@@ -312,3 +412,4 @@ void loop() {
 
     delay(25);
 }
+

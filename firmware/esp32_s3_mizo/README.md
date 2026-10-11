@@ -24,18 +24,18 @@ This folder contains the complete Arduino C++ firmware for connecting an **ESP32
 | **VDD** | `3.3V` | Power (3.3V only) |
 | **GND** | `GND` | Ground |
 | **L/R** | `GND` | Left channel select |
-| **SD** | `GPIO 4` | Serial Data Output |
+| **SCK** | `GPIO 4` | Serial Clock (BCLK) |
 | **WS** | `GPIO 5` | Word Select (LRCLK) |
-| **SCK** | `GPIO 6` | Serial Clock (BCLK) |
+| **SD** | `GPIO 6` | Serial Data Output (DOUT) |
 
 ### MAX98357A Amplifier ➔ ESP32-S3
 | MAX98357A Pin | ESP32-S3 Pin | Function |
 | :--- | :--- | :--- |
 | **VIN** | `5V` (or `3.3V`) | Power (5V provides louder 3W audio) |
 | **GND** | `GND` | Ground |
-| **DIN** | `GPIO 7` | Digital Audio Data Input |
-| **BCLK** | `GPIO 15` | Bit Clock |
-| **LRC** | `GPIO 16` | Left / Right Clock |
+| **BCLK** | `GPIO 18` | Bit Clock |
+| **LRC** | `GPIO 21` | Left / Right Clock (WS) |
+| **DIN** | `GPIO 20` | Digital Audio Data Input |
 | **GAIN** | `GND` | 9dB Gain setting (leave open for 12dB) |
 | **SD_MODE** | *Unconnected* | Stereo downmix to mono |
 
@@ -72,10 +72,28 @@ This folder contains the complete Arduino C++ firmware for connecting an **ESP32
 
 ---
 
-## 4. How It Works
+## 4. Exclusive Hardware Audio Architecture
 
-1. Press and hold the **BOOT button (GPIO 0)** on your ESP32-S3 board to speak.
-2. The **INMP441** records 16kHz 16-bit audio into memory.
-3. The board POSTs the audio directly to the cloud server endpoint `/api/v1/esp32/audio?format=audio`.
-4. The server transcribes the voice with Groq Whisper, injects RAG context and student memory, generates an AI response, synthesizes 16kHz WAV audio with Edge-TTS, and streams the binary reply back to the ESP32.
-5. The ESP32 streams the audio bytes directly into the **MAX98357A** I2S DAC, playing the response out of the speaker.
+Mizo 3.0 uses the ESP32-S3 as the **exclusive audio device**:
+- **Audio Input**: Captured exclusively by the **INMP441 I2S microphone** (laptop microphone capture disabled).
+- **Audio Output**: Played exclusively through the **MAX98357A I2S amplifier and external speaker** (laptop speaker playback disabled).
+- **Web Dashboard**: Kept for monitoring session progress, metrics, and text chat, but does not capture microphone audio or play voice audio through laptop speakers.
+- **Hardware Disconnect Protection**: If the ESP32-S3 is disconnected or offline, the dashboard displays a clear status message. No automatic fallback to the laptop microphone or speakers occurs.
+
+---
+
+## 5. How It Works
+
+1. **Boot & Speaker Hardware Self-Test**:
+   - On startup, the firmware runs `testSpeaker()` playing a 440Hz test sine tone for 500ms through `GPIO 7 (DIN), GPIO 15 (BCLK), GPIO 16 (LRC)` into the MAX98357A to immediately verify audio output and speaker wiring.
+2. **Heartbeat Monitoring**:
+   - The ESP32 periodically pings `GET /api/v1/esp32/ping` so the server and web dashboard recognize the hardware as online in real time.
+3. **Continuous Voice & Push-to-Talk**:
+   - The **INMP441** microphone monitors speech activity automatically (or press the **BOOT button (GPIO 0)**).
+   - Audio is captured at 16kHz 16-bit Mono.
+4. **Cloud Voice Pipeline**:
+   - The board POSTs the recorded WAV stream to `POST /api/v1/esp32/audio?format=audio`.
+   - The server transcribes speech with Whisper STT, routes through Mizo agents (Tutor, Coach, Speech, Normal Chat), manages memory & onboarding, and synthesizes 16kHz WAV audio.
+5. **Direct Hardware Audio Playback**:
+   - The binary WAV response stream from the server is streamed directly into the **MAX98357A** I2S DAC, playing Mizo's voice response through the external speaker.
+

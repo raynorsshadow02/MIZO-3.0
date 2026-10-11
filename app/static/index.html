@@ -304,6 +304,21 @@
             </div>
           </div>
           <div class="card-body">
+            <!-- ESP32-S3 Hardware Exclusive Audio Status Banner -->
+            <div class="esp32-hw-banner" id="esp32-hw-banner" style="margin-bottom:14px; padding:12px 16px; border-radius:10px; background:linear-gradient(135deg, rgba(15,23,42,0.85), rgba(30,41,59,0.85)); border:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+              <div style="display:flex; align-items:center; gap:12px;">
+                <span id="esp32-hw-dot" style="font-size:1.3rem;">🟢</span>
+                <div>
+                  <div style="font-weight:700; font-size:0.95rem; color:#f8fafc;" id="esp32-hw-status-title">ESP32-S3 Audio Hardware: Exclusive Device Active</div>
+                  <div style="font-size:0.8rem; color:var(--text-muted);" id="esp32-hw-status-desc">Microphone: INMP441 (I2S) • Speaker: MAX98357A (I2S) • Laptop microphone &amp; speakers disabled</div>
+                </div>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="badge" id="esp32-hw-badge" style="background:#10b981; color:#fff; font-size:0.75rem; padding:4px 10px; border-radius:12px;">Connected</span>
+                <button class="btn btn-secondary btn-sm" id="btn-hw-speaker-test" title="Test MAX98357A Speaker with 440Hz tone" style="font-size:0.75rem;">🔊 Speaker Test</button>
+              </div>
+            </div>
+
             <!-- Two-Way Continuous Voice Mode Hero Banner (ChatGPT / AI Assistant Style) -->
             <div class="voice-mode-banner">
               <div class="voice-mode-controls">

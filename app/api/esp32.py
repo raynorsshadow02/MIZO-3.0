@@ -1,9 +1,14 @@
 import os
 import re
 import uuid
+import time
+import io
+import wave
+import struct
+import math
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
-from fastapi import APIRouter, UploadFile, File, Form, Header, HTTPException, Query, Response
+from fastapi import APIRouter, UploadFile, File, Form, Header, HTTPException, Query, Response, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.config import settings
@@ -190,10 +195,96 @@ def verify_device(x_device_key: Optional[str] = Header(None), key: Optional[str]
     return True
 
 
+_esp32_hardware_state = {
+    "last_seen_timestamp": None,
+    "last_ip": None,
+    "last_activity": None
+}
+
+
+def record_esp32_activity(client_ip: Optional[str] = None, activity: str = "ping"):
+    """Records the most recent communication from the physical ESP32-S3 hardware."""
+    _esp32_hardware_state["last_seen_timestamp"] = time.time()
+    _esp32_hardware_state["last_activity"] = activity
+    if client_ip:
+        _esp32_hardware_state["last_ip"] = client_ip
+
+
 @router.get("/ping")
-async def ping():
+async def ping(request: Request):
     """Healthcheck endpoint for ESP32 Wi-Fi heartbeat."""
-    return {"status": "online", "server": settings.APP_NAME, "version": "3.0.0"}
+    client_ip = request.client.host if request.client else None
+    record_esp32_activity(client_ip, "heartbeat")
+    return {
+        "status": "online",
+        "server": settings.APP_NAME,
+        "version": "3.0.0",
+        "hardware_input": "INMP441 Microphone (I2S)",
+        "hardware_output": "MAX98357A Speaker DAC (I2S)",
+        "laptop_fallback": False
+    }
+
+
+@router.get("/hardware_status")
+async def get_hardware_status():
+    """
+    Returns real-time connection status of the ESP32-S3 hardware.
+    Mizo exclusively uses the ESP32-S3 INMP441 mic and MAX98357A speaker for audio.
+    Laptop audio fallback is disabled.
+    """
+    now = time.time()
+    last_seen = _esp32_hardware_state.get("last_seen_timestamp")
+    seconds_ago = round(now - last_seen, 1) if last_seen else None
+    # Connected if seen within the last 45 seconds
+    is_connected = bool(seconds_ago is not None and seconds_ago < 45.0)
+
+    return {
+        "connected": is_connected,
+        "exclusive_mode": True,
+        "input_device": "ESP32-S3 INMP441 Microphone (I2S)",
+        "output_device": "ESP32-S3 MAX98357A Speaker DAC (I2S)",
+        "laptop_microphone_enabled": False,
+        "laptop_speaker_enabled": False,
+        "laptop_fallback_enabled": False,
+        "last_seen_seconds_ago": seconds_ago,
+        "last_ip": _esp32_hardware_state.get("last_ip"),
+        "last_activity": _esp32_hardware_state.get("last_activity"),
+        "status_message": (
+            "ESP32-S3 hardware connected. INMP441 microphone and MAX98357A speaker active."
+            if is_connected
+            else "ESP32-S3 hardware is disconnected or unavailable. Audio input and output are exclusive to the ESP32-S3. Laptop audio fallback is disabled."
+        )
+    }
+
+
+@router.get("/speaker_test")
+@router.get("/test_tone")
+async def get_speaker_test_audio():
+    """
+    Returns a 16kHz 16-bit Mono WAV test tone (1-second 440Hz sine wave)
+    specifically designed to test the MAX98357A amplifier and external speaker.
+    """
+    sample_rate = 16000
+    duration = 1.0
+    num_samples = int(sample_rate * duration)
+    freq = 440.0
+
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        frames = bytearray()
+        for i in range(num_samples):
+            val = int(math.sin(2 * math.pi * freq * (i / sample_rate)) * 12000)
+            frames.extend(struct.pack('<h', val))
+        wf.writeframes(frames)
+    buf.seek(0)
+    return Response(
+        content=buf.getvalue(),
+        media_type="audio/wav",
+        headers={"Content-Disposition": 'attachment; filename="speaker_test_440hz.wav"'}
+    )
 
 
 @router.get("/audio/cache/{filename}")
@@ -300,10 +391,18 @@ async def handle_esp32_start_button(req: Optional[ESP32StartRequest] = None):
 @router.get("/audio")
 async def esp32_audio_status():
     """Status endpoint for ESP32 hardware voice pipeline."""
+    now = time.time()
+    last_seen = _esp32_hardware_state.get("last_seen_timestamp")
+    is_connected = bool(last_seen and (now - last_seen) < 45.0)
     return {
         "status": "ready",
         "service": "Mizo 3.0 ESP32 Hardware Audio Pipeline",
         "voice_state": voice_manager.state.value,
+        "exclusive_hardware": True,
+        "hardware_connected": is_connected,
+        "input_device": "INMP441 I2S Microphone (ESP32-S3)",
+        "output_device": "MAX98357A I2S Speaker (ESP32-S3)",
+        "laptop_fallback_enabled": False,
         "instructions": "Send POST multipart/form-data with 'audio' (.wav) to interact with Mizo.",
         "supported_formats": ["wav", "pcm", "mp3"]
     }
@@ -311,6 +410,7 @@ async def esp32_audio_status():
 
 @router.post("/audio")
 async def process_esp32_audio(
+    request: Request,
     audio: UploadFile = File(...),
     student_id: int = Form(1),
     session_id: Optional[str] = Form(None),
@@ -327,6 +427,9 @@ async def process_esp32_audio(
     6. Synthesizes 16kHz 16-bit Mono WAV audio for MAX98357A I2S DAC.
     7. Returns either direct WAV audio stream (format=audio) or JSON metadata (format=json).
     """
+    client_ip = request.client.host if (request and request.client) else None
+    record_esp32_activity(client_ip, "audio_upload")
+
     # 1. Save uploaded audio temporarily
     file_ext = Path(audio.filename or "recording.wav").suffix or ".wav"
     temp_in_path = settings.AUDIO_CACHE_DIR / f"esp32_in_{uuid.uuid4().hex[:8]}{file_ext}"

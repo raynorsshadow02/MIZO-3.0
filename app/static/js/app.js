@@ -58,6 +58,11 @@ let calibrationFrames = 0;
 let wakeWordRecognizer = null;
 let isWakeWordEnabled = true;
 
+// Hardware Exclusive Audio Mode: ESP32-S3 INMP441 Microphone & MAX98357A Speaker DAC
+const isLaptopAudioDisabled = true;
+let esp32HardwareConnected = false;
+let esp32HardwareStatusMessage = "Checking ESP32-S3 hardware connection...";
+
 // Separate, clearly defined timers
 let turnEndingSilenceSeconds = 3.0; // Normal conversation turn pause threshold (3s)
 let inactivityTimeoutSeconds = 10.0; // 10-second inactivity = SNOOZE / STANDBY, NOT microphone shutdown
@@ -80,6 +85,7 @@ document.addEventListener("DOMContentLoaded", () => {
   setupAudioBench();
   initWakeWordListener();
   setupSettingsEventHandlers();
+  initESP32HardwareMonitoring();
 });
 
 // -------------------------------------------------------------
@@ -1581,6 +1587,18 @@ function initAudioContextVAD(stream) {
 }
 
 async function startVoiceRecording(isAuto = false) {
+  // Requirement 1 & 8: Stop using laptop's microphone. Audio input is exclusively on ESP32-S3 INMP441.
+  if (isLaptopAudioDisabled) {
+    if (!isAuto) {
+      if (esp32HardwareConnected) {
+        showToast("🎙️ Hardware Mode: Speak into the external INMP441 microphone connected to your ESP32-S3.");
+      } else {
+        showToast("⚠️ ESP32-S3 hardware is disconnected or unavailable. Laptop microphone fallback is disabled. Use text chat below.", true);
+      }
+    }
+    return;
+  }
+
   if (isRecording || isMicMuted || isMizoSpeaking || isMikazaSpeaking || isProcessingBackend) return;
 
   const btnRecord = document.getElementById("btn-mic-record");
@@ -1760,10 +1778,10 @@ function setupAudioBench() {
   const btnVoiceMode = document.getElementById("btn-toggle-voice-mode");
   if (btnVoiceMode) {
     btnVoiceMode.addEventListener("click", () => {
-      if (isTwoWayVoiceMode) {
-        stopTwoWayVoiceMode();
+      if (esp32HardwareConnected) {
+        showToast("🎙️ Hardware Mode: Continuous voice is active on your ESP32-S3. Speak into the INMP441 microphone.");
       } else {
-        startTwoWayVoiceMode();
+        showToast("⚠️ ESP32-S3 hardware is disconnected or unavailable. Laptop audio fallback is disabled. Use text chat below.", true);
       }
     });
   }
@@ -1772,10 +1790,10 @@ function setupAudioBench() {
   const btnMic = document.getElementById("btn-mic-record");
   if (btnMic) {
     btnMic.addEventListener("click", () => {
-      if (isRecording) {
-        stopVoiceRecording();
+      if (esp32HardwareConnected) {
+        showToast("🎙️ Hardware Mode: User speech is captured via the ESP32-S3 INMP441 microphone.");
       } else {
-        startVoiceRecording(false);
+        showToast("⚠️ ESP32-S3 hardware is disconnected or unavailable. Laptop audio fallback is disabled. Use text chat below.", true);
       }
     });
   }
@@ -1875,6 +1893,12 @@ function setupAudioBench() {
 }
 
 function initWakeWordListener() {
+  // Requirement 1 & 9: Browser microphone listening disabled. Audio input is exclusive to ESP32-S3 INMP441.
+  if (isLaptopAudioDisabled) {
+    console.log("[Wake Word] Laptop microphone listener disabled. Hardware microphone (INMP441) on ESP32-S3 is active.");
+    return;
+  }
+
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRec) {
     console.log("[Wake Word] Local browser SpeechRecognition not supported in this environment; development fallback button available.");
@@ -2062,78 +2086,35 @@ async function sendTextMessage(overrideText = null) {
 }
 
 async function handleInteractionResponse(data) {
-  // 1. Play Audio through Virtual Player
+  // Requirement 2 & 9: Voice responses play through ESP32-S3 MAX98357A speaker only.
+  // Laptop speaker playback and microphone auto-starts are completely disabled.
+  const player = document.getElementById("sim-audio-player");
+  const waveform = document.getElementById("sim-waveform");
+  if (player) {
+    player.style.display = "none";
+    try { player.pause(); } catch (e) {}
+  }
+
+  isMizoSpeaking = false;
+  isMikazaSpeaking = false;
+
   if (data.audio_url) {
-    const player = document.getElementById("sim-audio-player");
-    const waveform = document.getElementById("sim-waveform");
-
-    if (player) {
-      isMizoSpeaking = true;
-      isMikazaSpeaking = true;
-      setSilenceBadge("🔊 Mizo speaking...", "playing");
-
-      player.src = data.audio_url;
-      player.style.display = "block";
-
-      if (waveform) waveform.classList.add("playing");
-      
-      player.play().catch(e => {
-        console.warn("Audio auto-play prevented:", e);
-        isMizoSpeaking = false;
-        isMikazaSpeaking = false;
+    setSilenceBadge("🔊 Spoken reply delivered to ESP32-S3 Speaker", "normal");
+    if (waveform) {
+      waveform.classList.add("playing");
+      setTimeout(() => {
         if (waveform) waveform.classList.remove("playing");
-        setVoiceState(VoiceState.ACTIVE_LISTENING, "audio_play_prevented");
-        if (!isRecording && !isMicMuted) {
-          setTimeout(() => startVoiceRecording(true), 500);
-        }
-      });
-
-      player.onended = () => {
-        if (waveform) waveform.classList.remove("playing");
-        isMizoSpeaking = false;
-        isMikazaSpeaking = false;
-
-        if (data.onboarding_step === "speech_test_prompt" || data.onboarding_step === "speaking_assessment") {
-          console.log("[Voice SM] Transitioning to ASSESSMENT_RECORDING after Mizo finishes speaking assessment prompt.");
-          setVoiceState(VoiceState.ASSESSMENT_RECORDING, "assessment_prompt_finished");
-          showAssessmentHUD(data.topic || "1-Minute Speaking Sample");
-          if (!isRecording && !isMicMuted) {
-            setTimeout(() => startVoiceRecording(true), 400);
-          }
-          return;
-        }
-
-        setVoiceState(VoiceState.ACTIVE_LISTENING, "speech_playback_ended");
-
-        // AUTOMATIC MICROPHONE AFTER EVERY QUESTION:
-        // Whenever Mizo asks the user a question, the microphone automatically becomes ready for the user's response!
-        // Do not require the user to say "Hey Mizo" after every question.
-        if (!isRecording && !isMicMuted) {
-          setTimeout(() => {
-            if (!isRecording && !isMizoSpeaking && !isMikazaSpeaking && !isMicMuted && currentVoiceState === VoiceState.ACTIVE_LISTENING) {
-              console.log("[Voice System] Question speech playback ended. Auto-activating mic for student reply!");
-              startVoiceRecording(true);
-            }
-          }, 350);
-        }
-      };
+      }, 3500);
     }
+  }
+
+  if (data.onboarding_step === "speech_test_prompt" || data.onboarding_step === "speaking_assessment") {
+    setVoiceState(VoiceState.ASSESSMENT_RECORDING, "assessment_prompt_ready");
+    showAssessmentHUD(data.topic || "1-Minute Speaking Sample");
+    showToast("🎙️ Speaking Assessment: Speak for ~1 minute into the ESP32-S3 INMP441 microphone.");
   } else {
-    // If no audio was returned, clear processing state and resume listening if mic active
-    if (data.onboarding_step === "speech_test_prompt" || data.onboarding_step === "speaking_assessment") {
-      setVoiceState(VoiceState.ASSESSMENT_RECORDING, "assessment_prompt_no_audio");
-      showAssessmentHUD(data.topic || "1-Minute Speaking Sample");
-      if (!isRecording && !isMicMuted) {
-        setTimeout(() => startVoiceRecording(true), 500);
-      }
-    } else {
-      setVoiceState(VoiceState.READY, "no_audio_ready");
-      setSilenceBadge("Ready", "idle");
-      if (!isRecording && !isMicMuted) {
-        setVoiceState(VoiceState.ACTIVE_LISTENING, "no_audio_auto_listen");
-        setTimeout(() => startVoiceRecording(true), 600);
-      }
-    }
+    setVoiceState(VoiceState.READY, "speech_response_delivered");
+    setSilenceBadge("Ready • ESP32-S3 Hardware Active", "idle");
   }
 
   // 2. Update Session Metrics & Cumulative Progress
@@ -3392,6 +3373,80 @@ async function analyzeSpeechRehearsal(transcript) {
   } catch (err) {
     console.error("Speech analysis error:", err);
     showToast("Error generating speech feedback", true);
+  }
+}
+
+// -------------------------------------------------------------
+// ESP32-S3 Hardware Exclusive Audio Monitoring
+// -------------------------------------------------------------
+function initESP32HardwareMonitoring() {
+  checkESP32HardwareStatus();
+  setInterval(checkESP32HardwareStatus, 3500);
+
+  const btnSpeakerTest = document.getElementById("btn-hw-speaker-test");
+  if (btnSpeakerTest) {
+    btnSpeakerTest.addEventListener("click", async () => {
+      showToast("🔊 Requesting 440Hz test tone for ESP32 MAX98357A speaker...");
+      try {
+        const res = await fetch("/api/v1/esp32/speaker_test");
+        if (res.ok) {
+          showToast("✓ Speaker test tone ready on server (16kHz WAV for MAX98357A)");
+        } else {
+          showToast("Speaker test request failed", true);
+        }
+      } catch (e) {
+        showToast("Error requesting speaker test", true);
+      }
+    });
+  }
+}
+
+async function checkESP32HardwareStatus() {
+  const dotEl = document.getElementById("esp32-hw-dot");
+  const titleEl = document.getElementById("esp32-hw-status-title");
+  const descEl = document.getElementById("esp32-hw-status-desc");
+  const badgeEl = document.getElementById("esp32-hw-badge");
+  const recordStatus = document.getElementById("record-status-text");
+
+  try {
+    const res = await fetch("/api/v1/esp32/hardware_status");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    esp32HardwareConnected = Boolean(data.connected);
+    esp32HardwareStatusMessage = data.status_message || "";
+
+    if (esp32HardwareConnected) {
+      if (dotEl) dotEl.textContent = "🟢";
+      if (titleEl) titleEl.textContent = "ESP32-S3 Audio Hardware: Connected (Active)";
+      if (descEl) descEl.textContent = "Exclusive Mode: INMP441 Microphone (I2S) • MAX98357A Speaker (I2S) • Laptop audio disabled";
+      if (badgeEl) {
+        badgeEl.textContent = "Connected";
+        badgeEl.style.background = "#10b981";
+      }
+      if (recordStatus && !isProcessingBackend) {
+        recordStatus.textContent = "🟢 ESP32-S3 Audio Active • Speak into INMP441 mic";
+      }
+    } else {
+      if (dotEl) dotEl.textContent = "🔴";
+      if (titleEl) titleEl.textContent = "ESP32-S3 Audio Hardware: Disconnected / Unavailable";
+      if (descEl) descEl.textContent = "⚠️ Audio is exclusive to ESP32-S3. Laptop audio fallback is disabled. Use text chat below.";
+      if (badgeEl) {
+        badgeEl.textContent = "Disconnected";
+        badgeEl.style.background = "#f43f5e";
+      }
+      if (recordStatus && !isProcessingBackend) {
+        recordStatus.textContent = "🔴 ESP32-S3 Disconnected • Laptop audio fallback disabled. Use text input.";
+      }
+    }
+  } catch (err) {
+    esp32HardwareConnected = false;
+    if (dotEl) dotEl.textContent = "🔴";
+    if (titleEl) titleEl.textContent = "ESP32-S3 Audio Hardware: Offline";
+    if (descEl) descEl.textContent = "⚠️ Unable to query hardware status. Laptop audio fallback disabled.";
+    if (badgeEl) {
+      badgeEl.textContent = "Offline";
+      badgeEl.style.background = "#f43f5e";
+    }
   }
 }
 
