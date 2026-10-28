@@ -87,8 +87,8 @@ async def delete_student_learner_data(student_id: int):
     - Permanently deletes student profile, conversations, assessments, mistakes, and sessions.
     - Strictly preserves system_settings, .env, and device API keys.
     """
-    _primary_student_or_503()
-    return delete_learner_data(PROTOTYPE_STUDENT_ID)
+    target_id = student_id if student_id else PROTOTYPE_STUDENT_ID
+    return delete_learner_data(target_id)
 
 
 @router.post("/{student_id}/complete-text-onboarding", response_model=StudentResponse)

@@ -1745,6 +1745,951 @@ h1, h2, h3, h4 {
   padding: 10px 12px;
 }
 
+/* ===================================================
+   MIZO ROBOT FACE & EMOTION / STATUS PANEL
+   =================================================== */
+
+.mizo-face-card {
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.88) 0%, rgba(30, 41, 59, 0.72) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius);
+  padding: 14px 18px 12px 18px;
+  margin-bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+  backdrop-filter: blur(16px);
+  transition: border-color 0.4s ease, box-shadow 0.4s ease;
+}
+
+/* ===================================================
+   DEVELOPER PREVIEW CONTROLS TOOLBAR
+   =================================================== */
+.mizo-face-preview-bar {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 440px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  gap: 8px;
+}
+
+.mizo-preview-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.mizo-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 3px 8px;
+  border-radius: 12px;
+  text-transform: uppercase;
+  transition: all 0.3s ease;
+}
+
+.mizo-mode-pill.live {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  color: #34d399;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.25);
+}
+
+.mizo-mode-pill.preview {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  color: #fbbf24;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.35);
+  animation: mizo-preview-pulse 1.8s infinite ease-in-out;
+}
+
+.mizo-preview-label {
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.mizo-preview-btn-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-face-preview {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+}
+
+.btn-face-preview:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f8fafc;
+  border-color: rgba(255, 255, 255, 0.25);
+  transform: translateY(-1px);
+}
+
+.btn-face-preview.active {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: #38bdf8;
+  color: #38bdf8;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
+}
+
+.btn-face-preview[data-preview="listening"].active {
+  background: rgba(34, 211, 238, 0.18);
+  border-color: #22d3ee;
+  color: #22d3ee;
+  box-shadow: 0 0 10px rgba(34, 211, 238, 0.4);
+}
+
+.btn-face-preview[data-preview="thinking"].active {
+  background: rgba(192, 132, 252, 0.18);
+  border-color: #c084fc;
+  color: #c084fc;
+  box-shadow: 0 0 10px rgba(192, 132, 252, 0.4);
+}
+
+.btn-face-preview[data-preview="speaking"].active {
+  background: rgba(52, 211, 153, 0.18);
+  border-color: #34d399;
+  color: #34d399;
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.4);
+}
+
+.btn-face-preview[data-preview="error"].active {
+  background: rgba(244, 63, 94, 0.18);
+  border-color: #f43f5e;
+  color: #f43f5e;
+  box-shadow: 0 0 10px rgba(244, 63, 94, 0.4);
+}
+
+.btn-preview-live {
+  border-style: dashed;
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #fbbf24;
+}
+
+.btn-preview-live:hover {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: #f59e0b;
+  color: #fde68a;
+}
+
+/* ===================================================
+   ROBOT SCREEN VISOR (OLED / TFT DISPLAY PROTOTYPE)
+   =================================================== */
+.mizo-face-inner {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  padding: 4px 0 6px 0;
+}
+
+.mizo-face-visor {
+  width: 230px;
+  height: 110px;
+  background: radial-gradient(ellipse at center, #0b1329 0%, #020617 100%);
+  border: 2px solid rgba(56, 189, 248, 0.35);
+  border-radius: 28px;
+  box-shadow: 0 0 24px rgba(6, 182, 212, 0.18), inset 0 0 18px rgba(0, 0, 0, 0.9);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  padding: 8px;
+  overflow: hidden;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Micro-scanline screen grid effect */
+.mizo-visor-screen-grid {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(255, 255, 255, 0.02) 0px,
+    rgba(255, 255, 255, 0.02) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.mizo-visor-glare {
+  position: absolute;
+  top: 3px;
+  left: 14px;
+  right: 14px;
+  height: 26px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0) 100%);
+  border-radius: 20px 20px 0 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* Listening Pulse Halo Ring */
+.mizo-listening-ring {
+  position: absolute;
+  width: 180px;
+  height: 75px;
+  border-radius: 50%;
+  border: 2px solid rgba(34, 211, 238, 0);
+  pointer-events: none;
+  z-index: 1;
+  transition: all 0.3s ease;
+}
+
+/* Thinking Dots Matrix */
+.mizo-thinking-matrix {
+  position: absolute;
+  top: 14px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: all 0.3s ease;
+  z-index: 2;
+}
+
+.tdot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #c084fc;
+  box-shadow: 0 0 8px #c084fc;
+}
+
+/* Eyes Container */
+.mizo-face-eyes {
+  display: flex;
+  gap: 36px;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  position: relative;
+  z-index: 2;
+  transition: transform 0.35s ease;
+}
+
+.mizo-eye {
+  width: 34px;
+  height: 38px;
+  border-radius: 18px;
+  background: #38bdf8;
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.85);
+  position: relative;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.mizo-pupil {
+  width: 10px;
+  height: 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 8px #ffffff;
+  transition: transform 0.28s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+/* Eye Tracking & Gaze Shifts */
+.mizo-face-card.gaze-left .mizo-pupil { transform: translate(-5px, 0); }
+.mizo-face-card.gaze-left .mizo-eye { transform: translate(-2px, 0); }
+.mizo-face-card.gaze-right .mizo-pupil { transform: translate(5px, 0); }
+.mizo-face-card.gaze-right .mizo-eye { transform: translate(2px, 0); }
+.mizo-face-card.gaze-up .mizo-pupil { transform: translate(0, -4px); }
+.mizo-face-card.gaze-up .mizo-eye { transform: translate(0, -2px); }
+.mizo-face-card.gaze-down .mizo-pupil { transform: translate(0, 4px); }
+.mizo-face-card.gaze-down .mizo-eye { transform: translate(0, 2px); }
+.mizo-face-card.gaze-center .mizo-pupil { transform: translate(0, 0); }
+.mizo-face-card.gaze-thinking .mizo-pupil { transform: translate(-3px, -3px); }
+.mizo-face-card.gaze-puzzled .eye-left .mizo-pupil { transform: translate(-3px, 0); }
+.mizo-face-card.gaze-puzzled .eye-right .mizo-pupil { transform: translate(3px, -2px); }
+
+/* Mouth Container */
+.mizo-face-mouth {
+  margin-top: 8px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 2;
+  width: 80px;
+  transition: all 0.2s ease;
+}
+
+.mouth-neutral-line {
+  width: 28px;
+  height: 3px;
+  background: #38bdf8;
+  border-radius: 3px;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.7);
+  transition: all 0.35s ease;
+}
+
+.mouth-waves {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 18px;
+}
+
+.m-wave {
+  width: 4px;
+  height: 6px;
+  background: #2dd4bf;
+  border-radius: 2px;
+  box-shadow: 0 0 8px rgba(45, 212, 191, 0.85);
+  transition: height 0.15s ease;
+}
+
+/* Status Bar below Face */
+.mizo-face-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 440px;
+  margin-top: 8px;
+  padding: 4px 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.mizo-face-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mizo-status-indicator-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.8);
+  transition: all 0.35s ease;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.mizo-status-indicator-dot.dot-idle {
+  background: #38bdf8;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.7);
+  animation: mizo-dot-idle 3s infinite ease-in-out;
+}
+
+.mizo-status-indicator-dot.dot-listening {
+  background: #06b6d4;
+  box-shadow: 0 0 12px #06b6d4;
+  animation: mizo-dot-pulse 1.1s infinite ease-in-out;
+}
+
+.mizo-status-indicator-dot.dot-thinking {
+  background: transparent;
+  box-shadow: none;
+  width: 12px;
+  height: 12px;
+}
+
+.mizo-status-indicator-dot.dot-speaking {
+  background: transparent;
+  box-shadow: none;
+  width: 14px;
+  height: 12px;
+}
+
+.mizo-status-indicator-dot.dot-error {
+  background: #f43f5e;
+  box-shadow: 0 0 10px #f43f5e;
+  animation: mizo-dot-pulse 0.9s infinite ease-in-out;
+}
+
+.status-mini-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(192, 132, 252, 0.3);
+  border-top-color: #c084fc;
+  border-radius: 50%;
+  animation: mizo-mini-spin 0.75s infinite linear;
+}
+
+.status-mini-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 12px;
+}
+
+.status-mini-wave i {
+  display: block;
+  width: 2.5px;
+  height: 10px;
+  background: #10b981;
+  border-radius: 2px;
+  animation: mizo-sw-bar 0.45s infinite alternate ease-in-out;
+}
+
+.status-mini-wave i:nth-child(1) { animation-delay: 0.05s; }
+.status-mini-wave i:nth-child(2) { animation-delay: 0.22s; }
+.status-mini-wave i:nth-child(3) { animation-delay: 0.12s; }
+
+.mizo-status-text {
+  font-family: 'Outfit', sans-serif;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #f8fafc;
+}
+
+.mizo-status-subtext {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  font-style: italic;
+  max-width: 270px;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===================================================
+   STATE-SPECIFIC EMOTIONS & VISUAL BEHAVIORS
+   =================================================== */
+
+/* 1. IDLE STATE */
+.mizo-face-card[data-state="idle"] .mizo-face-visor {
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 0 20px rgba(56, 189, 248, 0.15);
+  animation: mizo-idle-float 4.5s infinite ease-in-out;
+}
+
+.mizo-face-card[data-state="idle"] .mizo-eye {
+  background: #38bdf8;
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.75);
+  animation: mizo-blink 5.5s infinite ease-in-out;
+}
+
+.mizo-face-card[data-state="idle"].mizo-blink-now .mizo-eye {
+  transform: scaleY(0.08) !important;
+}
+
+.mizo-face-card[data-state="idle"] .mouth-neutral-line {
+  background: #38bdf8;
+  width: 24px;
+}
+
+/* 2. LISTENING STATE */
+.mizo-face-card[data-state="listening"] {
+  border-color: rgba(6, 182, 212, 0.55);
+}
+
+.mizo-face-card[data-state="listening"] .mizo-face-visor {
+  border-color: #06b6d4;
+  box-shadow: 0 0 32px rgba(6, 182, 212, 0.35);
+}
+
+.mizo-face-card[data-state="listening"] .mizo-listening-ring {
+  border-color: rgba(34, 211, 238, 0.6);
+  animation: mizo-listen-ring-pulse 1.3s infinite ease-out;
+}
+
+.mizo-face-card[data-state="listening"] .mizo-eye {
+  width: 38px;
+  height: 42px;
+  background: #22d3ee;
+  box-shadow: 0 0 24px rgba(34, 211, 238, 0.95);
+  animation: mizo-listen-pulse 1.4s infinite alternate ease-in-out;
+}
+
+.mizo-face-card[data-state="listening"] .mizo-pupil {
+  width: 14px;
+  height: 16px;
+  background: #ffffff;
+}
+
+.mizo-face-card[data-state="listening"] .mouth-neutral-line {
+  width: 14px;
+  height: 4px;
+  border-radius: 4px;
+  background: #22d3ee;
+}
+
+/* 3. THINKING STATE */
+.mizo-face-card[data-state="thinking"] {
+  border-color: rgba(168, 85, 247, 0.55);
+}
+
+.mizo-face-card[data-state="thinking"] .mizo-face-visor {
+  border-color: #a855f7;
+  box-shadow: 0 0 32px rgba(168, 85, 247, 0.35);
+}
+
+.mizo-face-card[data-state="thinking"] .mizo-thinking-matrix {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.mizo-face-card[data-state="thinking"] .td1 {
+  animation: mizo-think-dot 1.2s infinite ease-in-out;
+}
+
+.mizo-face-card[data-state="thinking"] .td2 {
+  animation: mizo-think-dot 1.2s infinite ease-in-out 0.2s;
+}
+
+.mizo-face-card[data-state="thinking"] .td3 {
+  animation: mizo-think-dot 1.2s infinite ease-in-out 0.4s;
+}
+
+.mizo-face-card[data-state="thinking"] .mizo-eye {
+  background: #c084fc;
+  box-shadow: 0 0 22px rgba(192, 132, 252, 0.9);
+  animation: mizo-think-scan 1.6s infinite ease-in-out;
+}
+
+.mizo-face-card[data-state="thinking"] .mouth-neutral-line {
+  width: 16px;
+  background: #c084fc;
+  animation: mizo-think-mouth 1.6s infinite ease-in-out;
+}
+
+/* 4. SPEAKING STATE */
+.mizo-face-card[data-state="speaking"] {
+  border-color: rgba(16, 185, 129, 0.5);
+}
+
+.mizo-face-card[data-state="speaking"] .mizo-face-visor {
+  border-color: #10b981;
+  box-shadow: 0 0 32px rgba(16, 185, 129, 0.35);
+}
+
+.mizo-face-card[data-state="speaking"] .mizo-eye {
+  background: #34d399;
+  box-shadow: 0 0 22px rgba(52, 211, 153, 0.9);
+  animation: mizo-speak-eye 0.8s infinite alternate ease-in-out;
+}
+
+.mizo-face-card[data-state="speaking"] .mizo-face-mouth {
+  animation: mizo-mouth-aperture 0.85s infinite ease-in-out alternate;
+}
+
+.mizo-face-card[data-state="speaking"] .mouth-neutral-line {
+  display: none;
+}
+
+.mizo-face-card[data-state="speaking"] .mouth-waves {
+  display: flex;
+}
+
+.mizo-face-card[data-state="speaking"] .w1 { animation: mizo-speak-wave-1 0.45s infinite alternate ease-in-out; }
+.mizo-face-card[data-state="speaking"] .w2 { animation: mizo-speak-wave-2 0.35s infinite alternate ease-in-out 0.08s; }
+.mizo-face-card[data-state="speaking"] .w3 { animation: mizo-speak-wave-3 0.5s infinite alternate ease-in-out 0.15s; }
+.mizo-face-card[data-state="speaking"] .w4 { animation: mizo-speak-wave-2 0.38s infinite alternate ease-in-out 0.05s; }
+.mizo-face-card[data-state="speaking"] .w5 { animation: mizo-speak-wave-1 0.42s infinite alternate ease-in-out 0.12s; }
+
+/* 5. ONBOARDING STATE (Backward Compatibility) */
+.mizo-face-card[data-state="onboarding"] {
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.mizo-face-card[data-state="onboarding"] .mizo-face-visor {
+  border-color: #f59e0b;
+  box-shadow: 0 0 30px rgba(245, 158, 11, 0.28);
+}
+
+.mizo-face-card[data-state="onboarding"] .mizo-eye {
+  width: 36px;
+  height: 22px;
+  background: transparent;
+  border: 4px solid #f59e0b;
+  border-bottom: 0;
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -4px 14px rgba(245, 158, 11, 0.7);
+  margin-top: 10px;
+}
+
+.mizo-face-card[data-state="onboarding"] .mizo-pupil {
+  display: none;
+}
+
+.mizo-face-card[data-state="onboarding"] .mouth-neutral-line {
+  width: 32px;
+  height: 14px;
+  background: transparent;
+  border: 3px solid #f59e0b;
+  border-top: 0;
+  border-radius: 0 0 16px 16px;
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.6);
+}
+
+/* 6. ERROR STATE (Friendly, Puzzled / Concerned Expression) */
+.mizo-face-card[data-state="error"] {
+  border-color: rgba(244, 63, 94, 0.5);
+}
+
+.mizo-face-card[data-state="error"] .mizo-face-visor {
+  border-color: #f43f5e;
+  box-shadow: 0 0 28px rgba(244, 63, 94, 0.35);
+}
+
+.mizo-face-card[data-state="error"] .mizo-eye {
+  background: #f43f5e;
+  box-shadow: 0 0 18px rgba(244, 63, 94, 0.85);
+}
+
+.mizo-face-card[data-state="error"] .eye-left {
+  transform: rotate(-12deg) scale(0.95);
+}
+
+.mizo-face-card[data-state="error"] .eye-right {
+  transform: rotate(12deg) scale(1.05);
+}
+
+.mizo-face-card[data-state="error"] .mouth-neutral-line {
+  background: #f43f5e;
+  width: 22px;
+  transform: rotate(-6deg);
+  border-radius: 4px;
+}
+
+/* ===================================================
+   KEYFRAME ANIMATIONS
+   =================================================== */
+
+@keyframes mizo-idle-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+
+@keyframes mizo-blink {
+  0%, 94%, 98%, 100% {
+    transform: scaleY(1);
+  }
+  96% {
+    transform: scaleY(0.1);
+  }
+}
+
+@keyframes mizo-listen-ring-pulse {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.2);
+    opacity: 0;
+  }
+}
+
+@keyframes mizo-listen-pulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 20px rgba(34, 211, 238, 0.8);
+  }
+  100% {
+    transform: scale(1.08);
+    box-shadow: 0 0 28px rgba(34, 211, 238, 1);
+  }
+}
+
+@keyframes mizo-think-scan {
+  0%, 100% {
+    transform: translateX(0);
+    opacity: 0.9;
+  }
+  35% {
+    transform: translateX(-4px);
+    opacity: 1;
+  }
+  70% {
+    transform: translateX(4px);
+    opacity: 0.8;
+  }
+}
+
+@keyframes mizo-think-dot {
+  0%, 100% {
+    transform: scale(0.8);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scale(1.5);
+    opacity: 1;
+  }
+}
+
+@keyframes mizo-think-mouth {
+  0%, 100% {
+    transform: scaleX(1);
+  }
+  50% {
+    transform: scaleX(0.6);
+  }
+}
+
+@keyframes mizo-speak-eye {
+  0% {
+    transform: scaleY(1);
+  }
+  100% {
+    transform: scaleY(1.06);
+  }
+}
+
+@keyframes mizo-mouth-aperture {
+  0% {
+    transform: scaleY(0.75) scaleX(0.9);
+  }
+  30% {
+    transform: scaleY(1.35) scaleX(1.1);
+  }
+  60% {
+    transform: scaleY(0.65) scaleX(0.85);
+  }
+  85% {
+    transform: scaleY(1.4) scaleX(1.15);
+  }
+  100% {
+    transform: scaleY(0.85) scaleX(1.0);
+  }
+}
+
+@keyframes mizo-speak-wave-1 {
+  0% { height: 4px; }
+  100% { height: 16px; }
+}
+
+@keyframes mizo-speak-wave-2 {
+  0% { height: 6px; }
+  100% { height: 18px; }
+}
+
+@keyframes mizo-speak-wave-3 {
+  0% { height: 5px; }
+  100% { height: 20px; }
+}
+
+@keyframes mizo-dot-idle {
+  0%, 100% { opacity: 0.85; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.15); box-shadow: 0 0 12px rgba(56, 189, 248, 0.95); }
+}
+
+@keyframes mizo-dot-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.35); opacity: 1; }
+}
+
+@keyframes mizo-mini-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes mizo-sw-bar {
+  0% { height: 3px; }
+  100% { height: 11px; }
+}
+
+@keyframes mizo-preview-pulse {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 1; }
+}
+
+/* ===================================================
+   REDUCED MOTION FALLBACK
+   =================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .mizo-face-visor,
+  .mizo-eye,
+  .mizo-pupil,
+  .mouth-neutral-line,
+  .mizo-face-mouth,
+  .m-wave,
+  .mizo-status-indicator-dot,
+  .status-mini-spinner,
+  .status-mini-wave i,
+  .mizo-listening-ring,
+  .tdot,
+  .mizo-mode-pill {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ===================================================
+   AUDIO INPUT/OUTPUT MODE SELECTOR
+   =================================================== */
+.audio-mode-section {
+  margin-bottom: 16px;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 14px 18px;
+  backdrop-filter: blur(10px);
+}
+
+.audio-mode-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.audio-mode-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #f8fafc;
+}
+
+.audio-mode-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.audio-mode-card {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px;
+  background: rgba(30, 41, 59, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+  text-align: left;
+}
+
+.audio-mode-card:hover {
+  background: rgba(30, 41, 59, 0.85);
+  border-color: rgba(56, 189, 248, 0.4);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.audio-mode-card.active {
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.15), rgba(99, 102, 241, 0.1));
+  border-color: #38bdf8;
+  box-shadow: 0 0 20px rgba(56, 189, 248, 0.25);
+}
+
+.audio-mode-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.audio-mode-card-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #f1f5f9;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.audio-mode-card.active .audio-mode-card-title {
+  color: #38bdf8;
+}
+
+.audio-mode-card-desc {
+  font-size: 0.78rem;
+  color: #94a3b8;
+  line-height: 1.4;
+  margin-bottom: 10px;
+  flex: 1;
+}
+
+.audio-mode-card-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.audio-mode-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #cbd5e1;
+}
+
+.audio-mode-status-pill.status-connected,
+.audio-mode-status-pill.status-ready {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.audio-mode-status-pill.status-disconnected,
+.audio-mode-status-pill.status-error {
+  background: rgba(244, 63, 94, 0.15);
+  color: #fb7185;
+  border: 1px solid rgba(244, 63, 94, 0.3);
+}
+
+.audio-mode-badge-active {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #0284c7;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: none;
+}
+
+.audio-mode-card.active .audio-mode-badge-active {
+  display: inline-block;
+}
+
 
 
 

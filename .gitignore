@@ -29,6 +29,8 @@ ENV/
 # Environment variables & secrets
 .env
 *.local
+secrets.h
+firmware/**/secrets.h
 
 # Database & Runtime Data
 data/*.db*

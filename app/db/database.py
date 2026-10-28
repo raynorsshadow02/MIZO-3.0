@@ -53,6 +53,7 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    _ensure_column(cursor, "system_settings", "audio_mode", "TEXT", "'esp32'")
 
     # 2. Students (Unified Learner Profile & Long-Term Memory)
     cursor.execute("""
@@ -93,6 +94,7 @@ def init_db():
     _ensure_column(cursor, "students", "learning_topics", "TEXT", "''")
     _ensure_column(cursor, "students", "profile_version", "INTEGER", 1)
     _ensure_column(cursor, "students", "speaking_assessment_completed", "INTEGER", 0)
+    _ensure_column(cursor, "students", "assessment_deferred", "INTEGER", 0)
     _ensure_column(cursor, "students", "onboarding_completed", "INTEGER", 0)
     _ensure_column(cursor, "students", "onboarding_step", "TEXT", "'ask_name'")
     _ensure_column(cursor, "students", "baseline_grammar", "REAL", None)
@@ -486,6 +488,7 @@ def init_db():
             ("ollama_model", "OLLAMA_MODEL"),
             ("tts_voice", "DEFAULT_TTS_VOICE"),
             ("tts_rate", "DEFAULT_TTS_RATE"),
+            ("audio_mode", "AUDIO_MODE"),
         ]:
             v = d.get(db_col)
             val_clean = "" if v is None else str(v).strip().strip("'\"")
@@ -581,6 +584,7 @@ def _apply_db_settings_to_runtime(current_db_settings: Dict[str, Any]):
         "ollama_model": "OLLAMA_MODEL",
         "tts_voice": "DEFAULT_TTS_VOICE",
         "tts_rate": "DEFAULT_TTS_RATE",
+        "audio_mode": "AUDIO_MODE",
     }
 
     for db_key, env_key in runtime_map.items():
@@ -610,7 +614,7 @@ def update_db_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         "active_provider", "groq_api_key", "openai_api_key", "qwen_api_key",
         "ollama_base_url", "groq_model", "openai_model", "qwen_model", "ollama_model",
         "system_prompt", "coaching_mode", "grammar_strictness", "tts_voice",
-        "tts_rate", "tts_pitch"
+        "tts_rate", "tts_pitch", "audio_mode"
     ]
 
     set_clauses = []
@@ -731,6 +735,8 @@ def _parse_student_dict(d: Dict[str, Any]) -> Dict[str, Any]:
     elif not isinstance(dur, list):
         item["durable_memories"] = []
 
+    item["assessment_deferred"] = int(item.get("assessment_deferred") or 0)
+
     return item
 
 
@@ -797,7 +803,7 @@ def update_student(student_id: int, updates: Dict[str, Any]) -> Optional[Dict[st
     valid_fields = [
         "name", "education", "grade", "native_language", "target_level", "self_reported_level",
         "interests", "learning_goals", "learning_topics", "onboarding_completed", "onboarding_step",
-        "speaking_assessment_completed", "profile_version", "assessed_level",
+        "speaking_assessment_completed", "assessment_deferred", "profile_version", "assessed_level",
         "baseline_grammar", "baseline_vocabulary", "baseline_fluency",
         "baseline_pronunciation", "baseline_confidence", "baseline_communication",
         "grammar_score", "vocabulary_score", "fluency_score", "pronunciation_score",
@@ -819,6 +825,11 @@ def update_student(student_id: int, updates: Dict[str, Any]) -> Optional[Dict[st
     ]
     for k, v in updates.items():
         if k in valid_fields and v is not None:
+            # Prevent overwriting existing valid profile data with empty/blank values
+            if isinstance(v, str) and not v.strip() and k in ["name", "education", "grade", "target_level", "learning_goals"]:
+                continue
+            if isinstance(v, list) and not v and k in ["strengths", "weaknesses"]:
+                continue
             if k in list_fields:
                 if isinstance(v, list):
                     v = json.dumps(v)
@@ -1329,14 +1340,13 @@ def reset_current_session(student_id: int, session_id: Optional[str] = None) -> 
 # -------------------------------------------------------------------
 # Database Operations: Sessions Lifecycle
 # -------------------------------------------------------------------
-def create_session(student_id: int, mode: str = "coach") -> Dict[str, Any]:
+def create_session(student_id: int = PROTOTYPE_STUDENT_ID, mode: str = "coach") -> Dict[str, Any]:
     """
     Creates a brand new learning session.
     Current session metrics are initialized to ZERO without deleting historical data.
     """
-    # Sessions are always owned by the single persisted prototype learner.
-    student_id = PROTOTYPE_STUDENT_ID
-    if not get_prototype_student():
+    target_student_id = student_id if student_id is not None else PROTOTYPE_STUDENT_ID
+    if not get_student(target_student_id):
         return {}
     conn = get_connection()
     cursor = conn.cursor()
@@ -1346,10 +1356,10 @@ def create_session(student_id: int, mode: str = "coach") -> Dict[str, Any]:
         UPDATE learning_sessions
         SET status = 'completed', updated_at = CURRENT_TIMESTAMP
         WHERE student_id = ? AND status = 'active'
-    """, (student_id,))
+    """, (target_student_id,))
 
     # Increment student total_sessions count
-    cursor.execute("UPDATE students SET total_sessions = total_sessions + 1 WHERE id = ?", (student_id,))
+    cursor.execute("UPDATE students SET total_sessions = total_sessions + 1 WHERE id = ?", (target_student_id,))
 
     session_id = f"ses_{uuid.uuid4().hex[:12]}"
     cursor.execute("""
@@ -1357,7 +1367,7 @@ def create_session(student_id: int, mode: str = "coach") -> Dict[str, Any]:
             session_id, student_id, mode, status,
             session_grammar, session_fluency, session_vocabulary, session_pacing, session_confidence, message_count
         ) VALUES (?, ?, ?, 'active', 0.0, 0.0, 0.0, 0.0, 0.0, 0)
-    """, (session_id, student_id, mode))
+    """, (session_id, target_student_id, mode))
     conn.commit()
     conn.close()
     return get_session_by_id(session_id)  # type: ignore

@@ -30,6 +30,12 @@ async def save_settings(payload: SystemSettingsUpdate):
         raise HTTPException(status_code=400, detail=f"Unknown provider: {active_provider}")
     if active_provider is not None:
         updates["active_provider"] = active_provider.strip().lower()
+    audio_mode = updates.get("audio_mode")
+    if audio_mode is not None:
+        audio_mode_clean = str(audio_mode).strip().lower()
+        if audio_mode_clean not in {"esp32", "laptop"}:
+            raise HTTPException(status_code=400, detail=f"Invalid audio_mode: {audio_mode}. Must be 'esp32' or 'laptop'.")
+        updates["audio_mode"] = audio_mode_clean
     updated = update_db_settings(updates)
 
     # Mask secrets in returned response
@@ -41,6 +47,27 @@ async def save_settings(payload: SystemSettingsUpdate):
         safe_updated[key] = ""
 
     return {"success": True, "message": "Settings updated successfully", "settings": safe_updated}
+
+
+@router.get("/audio_mode")
+async def get_audio_mode():
+    """Retrieve current authoritative audio mode ('esp32' | 'laptop')."""
+    settings_data = get_db_settings()
+    mode = str(settings_data.get("audio_mode") or "esp32").strip().lower()
+    if mode not in {"esp32", "laptop"}:
+        mode = "esp32"
+    return {"audio_mode": mode}
+
+
+@router.post("/audio_mode")
+async def set_audio_mode(payload: Dict[str, Any]):
+    """Update authoritative audio mode ('esp32' | 'laptop')."""
+    mode = payload.get("audio_mode") or payload.get("mode")
+    if not mode or str(mode).strip().lower() not in {"esp32", "laptop"}:
+        raise HTTPException(status_code=400, detail=f"Invalid audio mode: '{mode}'. Must be 'esp32' or 'laptop'.")
+    clean_mode = str(mode).strip().lower()
+    update_db_settings({"audio_mode": clean_mode})
+    return {"success": True, "audio_mode": clean_mode, "message": f"Audio mode set to {clean_mode}"}
 
 
 @router.get("/provider-status")

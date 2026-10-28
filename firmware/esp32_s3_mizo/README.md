@@ -64,10 +64,15 @@ This folder contains the complete Arduino C++ firmware for connecting an **ESP32
    - **Port**: Select the COM port corresponding to your ESP32-S3.
 
 3. **Configure Firmware**:
-   - Open [esp32_s3_mizo.ino](file:///c:/Users/samee/Desktop/mizo%203.0/firmware/esp32_s3_mizo/esp32_s3_mizo.ino).
-   - Change `WIFI_SSID` and `WIFI_PASSWORD` to your local Wi-Fi credentials.
-   - Set `MIZO_SERVER_IP` to your computer's local IP (Run `ipconfig` in Command Prompt to find your IPv4 address, e.g., `192.168.1.100`).
-   - Leave `MIZO_SERVER_PORT` as `8000`.
+   - Open `esp32_s3_mizo.ino`.
+   - Recommended: Copy `secrets.h.example` to `secrets.h` in `firmware/esp32_s3_mizo/` and set your local Wi-Fi credentials:
+     ```c
+     #define SECRET_WIFI_SSID     "SHAHID-4G"
+     #define SECRET_WIFI_PASSWORD "your_wifi_password"
+     ```
+     (`secrets.h` is excluded from Git so your password remains private).
+   - Alternatively, edit `WIFI_SSID` and `WIFI_PASSWORD` directly in `esp32_s3_mizo.ino`.
+   - Set `MIZO_SERVER_IP` to your server IP (`192.168.1.192`) and `MIZO_SERVER_PORT` to `8000`.
    - Click **Upload**.
 
 ---
@@ -75,7 +80,7 @@ This folder contains the complete Arduino C++ firmware for connecting an **ESP32
 ## 4. Exclusive Hardware Audio Architecture
 
 Mizo 3.0 uses the ESP32-S3 as the **exclusive audio device**:
-- **Audio Input**: Captured exclusively by the **INMP441 I2S microphone** (laptop microphone capture disabled).
+- **Audio Input**: Captured exclusively by the **INMP441 I2S microphone** (32-bit slot read -> converted 16-bit 16kHz PCM; laptop microphone capture disabled).
 - **Audio Output**: Played exclusively through the **MAX98357A I2S amplifier and external speaker** (laptop speaker playback disabled).
 - **Web Dashboard**: Kept for monitoring session progress, metrics, and text chat, but does not capture microphone audio or play voice audio through laptop speakers.
 - **Hardware Disconnect Protection**: If the ESP32-S3 is disconnected or offline, the dashboard displays a clear status message. No automatic fallback to the laptop microphone or speakers occurs.
@@ -85,15 +90,17 @@ Mizo 3.0 uses the ESP32-S3 as the **exclusive audio device**:
 ## 5. How It Works
 
 1. **Boot & Speaker Hardware Self-Test**:
-   - On startup, the firmware runs `testSpeaker()` playing a 440Hz test sine tone for 500ms through `GPIO 7 (DIN), GPIO 15 (BCLK), GPIO 16 (LRC)` into the MAX98357A to immediately verify audio output and speaker wiring.
+   - On startup, the firmware runs `testSpeaker()` playing a 440Hz test sine tone for 500ms through `GPIO 18 (BCLK), GPIO 21 (LRC), GPIO 20 (DIN)` into the MAX98357A to immediately verify audio output and speaker wiring.
 2. **Heartbeat Monitoring**:
    - The ESP32 periodically pings `GET /api/v1/esp32/ping` so the server and web dashboard recognize the hardware as online in real time.
 3. **Continuous Voice & Push-to-Talk**:
    - The **INMP441** microphone monitors speech activity automatically (or press the **BOOT button (GPIO 0)**).
+   - VAD computes energy over converted 16-bit PCM with multi-frame confirmation and post-playback cooldown to prevent continuous uploads or echo loops.
    - Audio is captured at 16kHz 16-bit Mono.
 4. **Cloud Voice Pipeline**:
    - The board POSTs the recorded WAV stream to `POST /api/v1/esp32/audio?format=audio`.
    - The server transcribes speech with Whisper STT, routes through Mizo agents (Tutor, Coach, Speech, Normal Chat), manages memory & onboarding, and synthesizes 16kHz WAV audio.
-5. **Direct Hardware Audio Playback**:
-   - The binary WAV response stream from the server is streamed directly into the **MAX98357A** I2S DAC, playing Mizo's voice response through the external speaker.
+5. **Safe Response Inspection & Direct Hardware Playback**:
+   - The ESP32 inspects the response status code and `Content-Type`. If the server returns JSON (e.g. wake word ignored in standby or error message), the ESP32 safely logs it and never writes it to the speaker DAC.
+   - If `audio/wav` is received, it validates the 44-byte RIFF/WAVE header and streams verified PCM samples directly into the **MAX98357A** I2S DAC.
 

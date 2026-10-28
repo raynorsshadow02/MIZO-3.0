@@ -17,6 +17,11 @@ import threading
 from enum import Enum
 from typing import Tuple, Optional, Callable, Dict, Any, List
 
+try:
+    from app.config import settings
+except ImportError:
+    settings = None
+
 logger = logging.getLogger("mizo.voice")
 
 # Canonical Assistant Identity
@@ -147,6 +152,8 @@ def normalize_text(text: str) -> str:
     Normalizes transcript:
     - Lowercase
     - Strips contractions/apostrophes
+    - Splits compound greetings (e.g. 'heymizo' -> 'hey mizo', 'himizu' -> 'hi mizu')
+    - Merges hyphenated and split syllables of Mizo (e.g. 'mi-zo', 'mi zo', 'mi-zu' -> 'mizo')
     - Replaces punctuation with spaces
     - Collapses multiple whitespace to single space
     """
@@ -154,15 +161,40 @@ def normalize_text(text: str) -> str:
         return ""
     t = text.lower().strip()
     t = re.sub(r"['’]", "", t)
+
+    # 1. Split joined greetings: heymizo -> hey mizo, himizu -> hi mizu, hellomizo -> hello mizo
+    t = re.sub(r"\b(hey|hi|hello|he|hay|ay)\s*(miz[ou]|mis[ou]|meez[ou]|mees[ou])\b", r"\1 \2", t)
+
+    # 2. Merge split/hyphenated syllables: mi-zo, mi-zu, mi zo, mi zu, mee-zo -> mizo
+    t = re.sub(r"\b(mi|me|mee|my)[\s\-]+(zo|zu|so|su|zoh|zoo|zue)\b", r"\1\2", t)
+
+    # 3. Replace non-alphanumeric/non-space with whitespace
     t = re.sub(r"[^\w\s]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
 
 
+MIZO_CANONICAL_AND_VARIANTS = {
+    "mizo", "mizu", "miso", "meeso", "meso", "mezo", "mizzo", "meiso",
+    "myzo", "mizoo", "mizoh", "mizue", "meezu", "misoo", "mezoo", "misa", "miza",
+    "mijo", "mejo", "mizoe", "mizou"
+}
+
+WAKE_GREETING_WORDS = [
+    "hey", "hi", "hello", "he", "hay", "ay", "hai", "aye", "ey", "yo", "ok", "okay", "hiya", "howdy"
+]
+
+# Common food/culinary nouns that disambiguate 'miso' as food rather than robot Mizo
+MISMATCH_FOLLOWING_WORDS = {
+    "soup", "paste", "broth", "ramen", "recipe", "dressing", "sauce", "bowl", "tofu", "dish", "glazed", "marinated"
+}
+
+
+
 def phonetic_mizo_normalize(word: str) -> str:
     """
     Normalizes phonetic variations of 'mizo':
-    e.g. 'meeso', 'meso', 'mezo', 'mizzo', 'miso', 'meiso', 'mizu', 'myzo', 'mizo' -> 'mizo'
+    e.g. 'mizu', 'meeso', 'meso', 'mezo', 'mizzo', 'miso', 'meiso', 'myzo', 'mizo', 'mizoo', 'mizoh' -> 'mizo'
     """
     w = word.lower().strip()
     if not w:
@@ -173,10 +205,10 @@ def phonetic_mizo_normalize(word: str) -> str:
     if w.startswith("me") and len(w) in [4, 5]:
         w = "mi" + w[2:]
     # Standardize sibilants / z sounds
-    w = re.sub(r"zz|ss|s", "z", w)
-    # Standardize trailing vowel
-    if w.endswith("u"):
-        w = w[:-1] + "o"
+    w = re.sub(r"zz|ss|s|zh", "z", w)
+    # Standardize trailing vowel or vowel endings
+    if w.endswith("u") or w.endswith("oh") or w.endswith("oo") or w.endswith("ue"):
+        w = re.sub(r"(?:u|oh|oo|ue)$", "o", w)
     # Collapse double letters
     w = re.sub(r"(.)\1+", r"\1", w)
     return w
@@ -193,7 +225,7 @@ def is_mizo_word(word: str) -> Tuple[bool, float]:
         return False, 0.0
 
     # 1. Exact match with canonical name or known Whisper misrecognitions
-    if w in ["mizo", "miso", "meeso", "meso", "mezo", "mizzo", "meiso", "mizu", "myzo"]:
+    if w in MIZO_CANONICAL_AND_VARIANTS:
         return True, 1.0
 
     # 2. Backward compatibility with legacy name variants
@@ -205,10 +237,12 @@ def is_mizo_word(word: str) -> Tuple[bool, float]:
     if p == "mizo":
         return True, 0.95
 
-    # 4. Strict fuzzy similarity directly against 'mizo'
-    ratio = difflib.SequenceMatcher(None, w, "mizo").ratio()
-    # Must start with 'm', have length 4-5 chars, and ratio >= 0.75
-    if w.startswith("m") and len(w) in [4, 5] and ratio >= 0.75:
+    # 4. Strict fuzzy similarity directly against 'mizo' or 'mizu'
+    ratio_mizo = difflib.SequenceMatcher(None, w, "mizo").ratio()
+    ratio_mizu = difflib.SequenceMatcher(None, w, "mizu").ratio()
+    ratio = max(ratio_mizo, ratio_mizu)
+    # Must start with 'm', have length 4-5 chars, and ratio >= 0.72
+    if w.startswith("m") and len(w) in [4, 5] and ratio >= 0.72:
         return True, ratio
 
     return False, ratio
@@ -270,11 +304,126 @@ def is_submit_command(text: str) -> bool:
     return False
 
 
+def is_assessment_skip_command(text: str) -> bool:
+    """
+    Detects whether the student requests skipping, deferring, or bypassing the speaking assessment.
+    Matches phrases such as:
+    - 'skip the assessment', 'skip assessment', 'skip it', 'can we skip this'
+    - 'not now', 'not right now', 'maybe later', 'later'
+    - 'let's talk normally', 'normal conversation', 'just talk', 'just chat'
+    - 'we can talk about it', 'can we just talk'
+    - 'no assessment', 'i don't want a test'
+    """
+    if not text or not text.strip():
+        return False
+    norm = normalize_text(text)
+    skip_phrases = [
+        "skip the assessment", "skip assessment", "skip this assessment",
+        "skip the test", "skip test", "skip it", "can we skip", "could we skip",
+        "let s skip", "lets skip", "not now", "not right now", "maybe later", "later on",
+        "let s talk normally", "lets talk normally", "talk normally", "normal talk",
+        "normal conversation", "normal chat", "just talk", "just chat",
+        "we can talk about it", "can we just talk", "let s just chat",
+        "i don t want to do the assessment", "i dont want to do the assessment",
+        "no assessment", "no test", "without assessment", "without test",
+        "don t want to test", "dont want to test", "skip"
+    ]
+    if any(p in norm for p in skip_phrases):
+        return True
+    if norm in ["skip", "later", "not now", "nope"]:
+        return True
+    return False
+
+
+def is_unclear_or_low_confidence_speech(
+    text: str,
+    stt_metadata: Optional[Dict[str, Any]] = None,
+    duration_seconds: float = 0.0
+) -> Tuple[bool, str]:
+    """
+    Safely identifies unclear, inaudible, hallucinated, or low-confidence transcription.
+    Returns: (is_unreliable: bool, reason: str)
+
+    Guarantees:
+    - Short valid answers ('yes', 'no', 'stop', 'ok', 'sure', 'skip', 'hi', names) are NEVER rejected.
+    - Control commands are recognized before rejection.
+    - Whisper silence hallucinations (e.g. 'Thank you for watching', Norwegian/Malay strings) are caught.
+    - If STT exposes language or confidence (avg_logprob, no_speech_prob), they are evaluated.
+    """
+    clean = (text or "").strip()
+    if not clean:
+        return True, "empty_transcript"
+
+    norm = normalize_text(clean)
+    words = norm.split()
+
+    # 1. Short valid answers and control commands are protected
+    valid_short = {
+        "yes", "yeah", "yep", "sure", "ok", "okay", "no", "nope",
+        "stop", "pause", "resume", "hi", "hello", "hey", "skip",
+        "done", "submit", "finish", "cancel", "help", "mizo",
+        "beginner", "intermediate", "advanced", "student", "one", "two", "three", "four", "five"
+    }
+    if norm in valid_short or (len(words) == 1 and words[0] in valid_short):
+        return False, ""
+
+    if is_stop_command(norm) or is_submit_command(norm) or is_assessment_skip_command(norm) or is_wake_word(norm, log_debug=False)[0]:
+        return False, ""
+
+    # Single-word name or word check (length >= 3 and is alphabetical)
+    if len(words) == 1 and len(words[0]) >= 3 and words[0].isalpha():
+        # Valid single word (e.g. name "Shahid", "Ethan", "Robotics", "Delhi")
+        return False, ""
+
+    # 2. Whisper common silence hallucination patterns
+    hallucination_phrases = [
+        "thank you for watching", "thanks for watching", "subtitles by", "subtitled by",
+        "takk for at du så på", "takk for at du sa pa", "undertekster av",
+        "terima kasih telah menonton", "terima kasih", "selamat menonton",
+        "amara org", "opensubtitles", "watching my video", "like and subscribe"
+    ]
+    if any(h in norm for h in hallucination_phrases):
+        return True, "whisper_silence_hallucination"
+
+    # Only punctuation or repeated characters
+    if re.fullmatch(r"^[.\-?!,;:\s]+$", clean):
+        return True, "punctuation_only"
+
+    # 3. STT metadata confidence and language signals
+    if stt_metadata:
+        # Check no_speech_prob if exposed
+        no_speech = stt_metadata.get("no_speech_prob")
+        if no_speech is not None and isinstance(no_speech, (int, float)):
+            if float(no_speech) > 0.82 and len(words) <= 3:
+                return True, "high_no_speech_probability"
+
+        # Check avg_logprob if exposed
+        logprob = stt_metadata.get("avg_logprob")
+        if logprob is not None and isinstance(logprob, (int, float)):
+            if float(logprob) < -1.8 and len(words) <= 3:
+                return True, "low_logprob_confidence"
+
+        # Check detected language
+        detected_lang = stt_metadata.get("language")
+        if detected_lang and isinstance(detected_lang, str):
+            lang_code = detected_lang.lower().strip()
+            # If Whisper detected Norwegian, Malay, Welsh, Indonesian, etc., and words don't match English
+            if lang_code in ["no", "nn", "ms", "id", "cy", "tl", "jw", "su"] and not any(w in valid_short for w in words):
+                return True, f"foreign_language_hallucination_{lang_code}"
+
+    # 4. Inaudible extremely short non-word sound
+    if len(clean) <= 2 and clean.lower() not in valid_short:
+        return True, "ambiguous_short_sound"
+
+    return False, ""
+
+
 def classify_command_or_intent(text: str) -> str:
     """
     Fine-grained command & intent classifier for the Mizo runtime:
     - 'STOP': Stop control command ('Stop Mizo', 'Stop', 'Go to sleep')
     - 'SUBMIT': Assessment submission command ('Submit', 'Finish', 'Done')
+    - 'SKIP_ASSESSMENT': Defer/skip assessment ('Skip the assessment', 'Not now', 'Let's talk normally')
     - 'WAKE': Addressing Mizo to activate ('Hey Mizo', 'Mizo')
     - 'UPDATE_USER_NAME': Explicit request to update personal name ('My name is Shahid', 'Update my name to Shahid')
     - 'IDENTITY_QUERY': User asking Mizo's name ('What is your name?', 'Who are you?')
@@ -296,6 +445,10 @@ def classify_command_or_intent(text: str) -> str:
     # 2. SUBMIT command
     if is_submit_command(norm):
         return "SUBMIT"
+
+    # 2b. SKIP ASSESSMENT command
+    if is_assessment_skip_command(norm):
+        return "SKIP_ASSESSMENT"
 
     # 3. WAKE command
     intent = detect_mizo_intent(text, log_debug=False)
@@ -397,26 +550,33 @@ def detect_mizo_intent(text: str, log_debug: bool = True) -> str:
         if score > best_similarity:
             best_similarity = score
 
-    # Condition A: Single word utterance matching Mizo (e.g. "Mizo", "Miso", "Meeso")
+    # Condition A: Single word utterance matching Mizo (e.g. "Mizo", "Miso", "Mizu", "Meeso")
     if len(words) == 1:
         match, score = is_mizo_word(words[0])
         if match:
             is_wake = True
             best_similarity = max(best_similarity, score)
 
-    # Condition B: Natural greeting followed by Mizo (e.g. "Hey Mizo", "Hello Mizo", "Hi Mizo", "Yo Mizo")
-    elif words[0] in ["hey", "hi", "hello", "yo", "ok", "okay"] and len(words) >= 2:
+    # Condition B: Natural greeting followed by Mizo (e.g. "Hey Mizo", "Hello Mizo", "Hi Mizo", "He Mizu", "Hey Mizu")
+    elif words[0] in WAKE_GREETING_WORDS and len(words) >= 2:
         if is_mizo_word(words[1])[0]:
-            is_wake = True
-            best_similarity = max(best_similarity, is_mizo_word(words[1])[1])
-        elif len(words) >= 3 and words[1] in ["there", "um", "ah", "please"] and is_mizo_word(words[2])[0]:
+            if len(words) >= 3 and words[1] in ["miso", "meso", "meeso"] and words[2] in MISMATCH_FOLLOWING_WORDS:
+                is_wake = False
+            else:
+                is_wake = True
+                best_similarity = max(best_similarity, is_mizo_word(words[1])[1])
+        elif len(words) >= 3 and words[1] in ["there", "um", "ah", "please", "buddy", "robot"] and is_mizo_word(words[2])[0]:
             is_wake = True
             best_similarity = max(best_similarity, is_mizo_word(words[2])[1])
 
     # Condition C: Utterance starting with Mizo (e.g. "Mizo, are you there?", "Mizo, wake up", "Mizo, can you hear me?")
     elif is_mizo_word(words[0])[0]:
-        is_wake = True
-        best_similarity = max(best_similarity, is_mizo_word(words[0])[1])
+        if words[0] in ["miso", "meso", "meeso"] and len(words) >= 2 and words[1] in MISMATCH_FOLLOWING_WORDS:
+            is_wake = False
+        else:
+            is_wake = True
+            best_similarity = max(best_similarity, is_mizo_word(words[0])[1])
+
 
     # Condition D: Addressing phrases ending with Mizo (e.g. "Wake up, Mizo", "Are you there, Mizo", "Can you hear me, Mizo", "What's up, Mizo")
     elif is_mizo_word(words[-1])[0]:
@@ -433,12 +593,22 @@ def detect_mizo_intent(text: str, log_debug: bool = True) -> str:
         is_wake = True
         best_similarity = max(best_similarity, 0.95)
 
-    # Format debug output logs
+    # Format debug output logs with clear rejection reasons
     intent = "WAKE" if is_wake else "NORMAL"
+    rejection_reason = ""
+    if not is_wake:
+        if best_similarity > 0.0:
+            rejection_reason = f"Phonetic similarity too low ({best_similarity:.2f} < 0.72) or not in greeting context"
+        else:
+            rejection_reason = "No wake greeting or Mizo name variant detected"
+
     if log_debug:
         print(f'[WAKE] Raw transcription: "{text}"', flush=True)
         print(f'[WAKE] Normalized: "{norm}"', flush=True)
         print(f'[WAKE] Similarity to "mizo": {best_similarity:.2f}', flush=True)
+        print(f'[WAKE] Match result: {is_wake}', flush=True)
+        if not is_wake:
+            print(f'[WAKE] Rejection reason: {rejection_reason}', flush=True)
         print(f'[WAKE] Intent: {intent}', flush=True)
 
     return intent
@@ -459,11 +629,12 @@ def is_wake_word(text: str, custom_variants: Optional[List[str]] = None, log_deb
 
     # Extract trailing speech after Mizo or prefix
     # E.g. "Hey Mizo, teach me biology" -> "teach me biology"
-    # E.g. "Mizo, what is photosynthesis?" -> "what is photosynthesis?"
-    if len(words) >= 2 and words[0] in ["hey", "hi", "hello", "yo", "ok", "okay"]:
+    # E.g. "Hello Mizo, explain photosynthesis" -> "explain photosynthesis"
+    # E.g. "He Mizu, what is gravity?" -> "what is gravity?"
+    if len(words) >= 2 and words[0] in WAKE_GREETING_WORDS:
         if is_mizo_word(words[1])[0]:
             trailing = " ".join(words[2:]).strip()
-        elif len(words) >= 3 and words[1] in ["there", "um", "ah", "please"] and is_mizo_word(words[2])[0]:
+        elif len(words) >= 3 and words[1] in ["there", "um", "ah", "please", "buddy", "robot"] and is_mizo_word(words[2])[0]:
             trailing = " ".join(words[3:]).strip()
     elif len(words) >= 1 and is_mizo_word(words[0])[0]:
         trailing = " ".join(words[1:]).strip()
@@ -507,10 +678,15 @@ class VoiceManager:
         self.is_interrupted: bool = False
         self.is_speaking: bool = False
         self.auto_listen_after_tts: bool = True
+        self.last_interaction_timestamp: float = time.time()
         self._playback_process = None
         self._lock = threading.RLock()
         self._wake_listener_running: bool = False
         self._state_callbacks: List[Callable[[VoiceState], None]] = []
+        self._manual_activation_active: bool = False
+        self._manual_activation_timestamp: float = 0.0
+        self._manual_activation_timeout: float = 30.0
+        self._turn_in_progress: int = 0
 
     @property
     def microphone_active(self) -> bool:
@@ -526,6 +702,46 @@ class VoiceManager:
     def is_processing(self) -> bool:
         """Indicates if state machine is actively performing inference."""
         return self.state == VoiceState.PROCESSING
+
+    def begin_turn(self):
+        """Marks that a voice/chat turn is actively being processed to prevent premature snoozing."""
+        with self._lock:
+            self._turn_in_progress += 1
+
+    def end_turn(self):
+        """Marks that active voice/chat turn processing has completed."""
+        with self._lock:
+            if self._turn_in_progress > 0:
+                self._turn_in_progress -= 1
+
+    def touch_interaction(self):
+        """Updates last interaction timestamp upon receiving meaningful user speech or interaction."""
+        with self._lock:
+            self.last_interaction_timestamp = time.time()
+
+    def check_inactivity_timeout(self, timeout_seconds: Optional[float] = None) -> bool:
+        """If in active conversation/ready state and idle for more than timeout_seconds, transitions back to WAKE_LISTENING."""
+        with self._lock:
+            # Never snooze while a turn is actively processing, speech recognition is running, or TTS is playing
+            if self._turn_in_progress > 0 or self.is_speaking or self.is_processing:
+                return False
+            if self.state in [
+                VoiceState.SPEAKING, VoiceState.PROCESSING, VoiceState.PROCESSING_ASSESSMENT,
+                VoiceState.ASSESSMENT_RECORDING, VoiceState.ASSESSMENT
+            ]:
+                return False
+            idle_states = [VoiceState.WAKE_LISTENING, VoiceState.STANDBY, VoiceState.PAUSED, VoiceState.SNOOZED, VoiceState.SLEEP]
+            if self.state in idle_states:
+                return False
+            limit = timeout_seconds if timeout_seconds is not None else (
+                getattr(settings, "CONVERSATION_TIMEOUT_SECONDS", 60.0) if settings else 60.0
+            )
+            elapsed = time.time() - self.last_interaction_timestamp
+            if elapsed > limit:
+                self.log(f"Conversation timed out after {round(elapsed, 1)}s. Returning to WAKE_LISTENING.")
+                self.enter_snooze()
+                return True
+            return False
 
     def log(self, message: str):
         """Outputs structured debug logs according to Mizo specification."""
@@ -579,12 +795,14 @@ class VoiceManager:
             if self._wake_listener_running:
                 return
             self._wake_listener_running = True
+            self.log("Microphone listener started.")
             self.transition_to(VoiceState.WAKE_LISTENING, "start_wake_listener")
 
     def stop_wake_listener(self):
         """Stops the wake listener gracefully."""
         with self._lock:
             self._wake_listener_running = False
+            self.log("Microphone listener stopped.")
             self.transition_to(VoiceState.WAKE_LISTENING, "stop_wake_listener")
 
     def handle_standby_speech(self, raw_transcript: str) -> Tuple[bool, str]:
@@ -597,6 +815,7 @@ class VoiceManager:
 
         if intent == "WAKE":
             is_wake, trailing = is_wake_word(raw_transcript, log_debug=False)
+            self.touch_interaction()
             self.log(f'Heard: "{raw_transcript}"')
             self.log("Wake word detected: Mizo")
             self.log("Wake word detected")
@@ -618,6 +837,7 @@ class VoiceManager:
         - Detects agent (Subject Tutor, Communication Coach, Speech Coach)
         - Transitions ACTIVE_CONVERSATION -> PROCESSING
         """
+        self.touch_interaction()
         self.log(f'Heard: "{utterance}"')
         self.log("End of speech detected.")
         self.transition_to(VoiceState.PROCESSING, "end_of_speech")
@@ -638,17 +858,20 @@ class VoiceManager:
 
     def handle_speaking_start(self):
         """Called when Mizo begins TTS playback."""
-        self.is_interrupted = False
-        self.is_speaking = True
-        self.transition_to(VoiceState.SPEAKING, "tts_start")
+        with self._lock:
+            self.is_interrupted = False
+            self.is_speaking = True
+            self.transition_to(VoiceState.SPEAKING, "tts_start")
 
     def handle_speaking_ended(self):
         """Called when TTS playback completes naturally."""
-        self.is_speaking = False
-        if self.auto_listen_after_tts:
-            self.transition_to(VoiceState.ACTIVE_CONVERSATION, "playback_completed")
-        else:
-            self.transition_to(VoiceState.WAKE_LISTENING, "playback_completed")
+        with self._lock:
+            self.is_speaking = False
+            self.touch_interaction()
+            if self.auto_listen_after_tts:
+                self.transition_to(VoiceState.ACTIVE_CONVERSATION, "playback_completed")
+            else:
+                self.transition_to(VoiceState.WAKE_LISTENING, "playback_completed")
 
     def handle_barge_in(self, speech_text: str = ""):
         """
@@ -660,10 +883,12 @@ class VoiceManager:
         self.log("Interrupting TTS.")
         self.is_interrupted = True
         self.stop_current_playback()
+        self.log("Playback interrupted.")
 
         if is_stop_command(speech_text):
             self.handle_stop_command()
         else:
+            self.touch_interaction()
             self.transition_to(VoiceState.ACTIVE_CONVERSATION, "barge_in_interruption")
 
     def handle_stop_command(self):
@@ -680,15 +905,63 @@ class VoiceManager:
         self.log("Cancelling current response...")
         self.is_interrupted = True
         self.stop_current_playback()
+        self.log("Playback interrupted.")
+        self._manual_activation_active = False
+        self._manual_activation_timestamp = 0.0
         self.transition_to(VoiceState.WAKE_LISTENING, "stop_command")
+        self.log("Wake listener resumed.")
 
     def enter_snooze(self):
         """
         Transitions into WAKE_LISTENING mode after ~10s of inactivity.
         Preserves continuous microphone monitoring for 'Mizo'.
         """
+        self._manual_activation_active = False
+        self._manual_activation_timestamp = 0.0
         self.transition_to(VoiceState.WAKE_LISTENING, "inactivity_snooze")
         self.log("Entered SLEEP mode. Audio monitoring active for 'Mizo'.")
+
+    def activate_manual_mode(self, timeout_seconds: float = 30.0):
+        """Enables manual voice activation override, bypassing wake word for the next interaction."""
+        with self._lock:
+            self._manual_activation_active = True
+            self._manual_activation_timestamp = time.time()
+            self._manual_activation_timeout = max(0.1, timeout_seconds)
+            self.touch_interaction()
+            self.transition_to(VoiceState.ACTIVE_LISTENING, "manual_activation")
+            self.log("Manual voice activation enabled. Wake word bypassed for upcoming turn.")
+
+    def deactivate_manual_mode(self, reason: str = "manual_deactivated"):
+        """Deactivates manual voice activation override and restores standby wake listening."""
+        with self._lock:
+            self._manual_activation_active = False
+            self._manual_activation_timestamp = 0.0
+            self.transition_to(VoiceState.WAKE_LISTENING, reason)
+            self.log("Manual voice activation disabled.")
+
+    def is_manual_activation_active(self) -> bool:
+        """Checks if manual voice activation override is currently active and within timeout."""
+        with self._lock:
+            if not self._manual_activation_active:
+                return False
+            elapsed = time.time() - self._manual_activation_timestamp
+            if elapsed > self._manual_activation_timeout:
+                self.log(f"Manual voice activation timed out after {round(elapsed, 1)}s. Reverting to standby.")
+                self._manual_activation_active = False
+                if self.state in [VoiceState.ACTIVE_LISTENING, VoiceState.READY]:
+                    self.transition_to(VoiceState.WAKE_LISTENING, "manual_activation_timeout")
+                return False
+            return True
+
+    def consume_manual_activation(self) -> bool:
+        """Consumes manual voice activation override upon receiving an audio/speech turn."""
+        with self._lock:
+            if self.is_manual_activation_active():
+                self._manual_activation_active = False
+                self._manual_activation_timestamp = 0.0
+                self.log("Manual voice activation consumed by incoming audio turn.")
+                return True
+            return False
 
     def stop_current_playback(self):
         """Halts running audio playback process/stream."""

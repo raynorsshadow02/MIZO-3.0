@@ -47,18 +47,22 @@ class Settings(BaseSettings):
     # STT Models
     GROQ_WHISPER_MODEL: str = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3")
     OPENAI_WHISPER_MODEL: str = os.getenv("OPENAI_WHISPER_MODEL", "whisper-1")
+    STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "en")
 
     # Centralized TTS Settings
     DEFAULT_TTS_VOICE: str = os.getenv("DEFAULT_TTS_VOICE", "en-US-GuyNeural")
     DEFAULT_TTS_RATE: str = os.getenv("DEFAULT_TTS_RATE", "+0%")
     DEFAULT_TTS_PITCH: str = os.getenv("DEFAULT_TTS_PITCH", "+0Hz")
+    DEFAULT_TTS_VOLUME: str = os.getenv("DEFAULT_TTS_VOLUME", "+100%")
     TTS_LANGUAGE: str = os.getenv("TTS_LANGUAGE", "en-US")
     TTS_VOICE: str = os.getenv("DEFAULT_TTS_VOICE", "en-US-GuyNeural")
     TTS_RATE: str = os.getenv("DEFAULT_TTS_RATE", "+0%")
     TTS_PITCH: str = os.getenv("DEFAULT_TTS_PITCH", "+0Hz")
+    TTS_VOLUME: str = os.getenv("DEFAULT_TTS_VOLUME", "+100%")
 
     # Voice State Machine & Audio Timing Settings
     SILENCE_TIMEOUT_SECONDS: float = 3.0
+    CONVERSATION_TIMEOUT_SECONDS: float = float(os.getenv("CONVERSATION_TIMEOUT_SECONDS", "60.0"))
     MAX_ASSESSMENT_DURATION_SECONDS: float = 120.0
     MIN_ASSESSMENT_WORDS: int = 12
 
@@ -66,6 +70,8 @@ class Settings(BaseSettings):
     DEFAULT_DEVICE_KEY: str = os.getenv("DEFAULT_DEVICE_KEY", "mizo_esp32_secret_key_123")
     AUDIO_SAMPLE_RATE: int = 16000  # 16kHz audio for ESP32 INMP441 & MAX98357A
     AUDIO_CHANNELS: int = 1         # Mono
+    HARDWARE_TEST_MODE: bool = os.getenv("HARDWARE_TEST_MODE", "false").lower() in ("true", "1", "yes")
+    AUDIO_MODE: str = os.getenv("AUDIO_MODE", "esp32")  # "esp32" | "laptop"
 
 
 settings = Settings()

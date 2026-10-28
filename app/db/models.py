@@ -22,6 +22,7 @@ class SystemSettingsUpdate(BaseModel):
     tts_voice: Optional[str] = None
     tts_rate: Optional[str] = None
     tts_pitch: Optional[str] = None
+    audio_mode: Optional[str] = None  # "esp32" | "laptop"
     clear_groq_key: Optional[bool] = None
     clear_openai_key: Optional[bool] = None
     clear_qwen_key: Optional[bool] = None
@@ -49,6 +50,8 @@ class SystemSettings(BaseModel):
     tts_voice: str = "en-US-GuyNeural"
     tts_rate: str = "+0%"
     tts_pitch: str = "+0Hz"
+    audio_mode: str = "esp32"
+
 
 
 class ProviderStatusItem(BaseModel):
@@ -464,5 +467,19 @@ class ESP32StartResponse(BaseModel):
     onboarding_step: Optional[str] = None
     session_id: str
     topic: Optional[str] = None
+
+
+class ESP32ManualActivateRequest(BaseModel):
+    action: Optional[str] = "activate"  # "activate", "deactivate", "toggle"
+    timeout_seconds: Optional[float] = 30.0
+
+
+class ESP32ManualActivateResponse(BaseModel):
+    success: bool = True
+    active: bool = True
+    voice_state: str
+    message: str
+    timeout_seconds: float
+
 
 

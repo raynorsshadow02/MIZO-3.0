@@ -304,18 +304,56 @@
             </div>
           </div>
           <div class="card-body">
-            <!-- ESP32-S3 Hardware Exclusive Audio Status Banner -->
-            <div class="esp32-hw-banner" id="esp32-hw-banner" style="margin-bottom:14px; padding:12px 16px; border-radius:10px; background:linear-gradient(135deg, rgba(15,23,42,0.85), rgba(30,41,59,0.85)); border:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
-              <div style="display:flex; align-items:center; gap:12px;">
-                <span id="esp32-hw-dot" style="font-size:1.3rem;">🟢</span>
-                <div>
-                  <div style="font-weight:700; font-size:0.95rem; color:#f8fafc;" id="esp32-hw-status-title">ESP32-S3 Audio Hardware: Exclusive Device Active</div>
-                  <div style="font-size:0.8rem; color:var(--text-muted);" id="esp32-hw-status-desc">Microphone: INMP441 (I2S) • Speaker: MAX98357A (I2S) • Laptop microphone &amp; speakers disabled</div>
+            <!-- Audio Input/Output Mode Selector Section -->
+            <div class="audio-mode-section" id="audio-mode-selector-section">
+              <div class="audio-mode-header">
+                <div class="audio-mode-header-title">
+                  <span>🎙️ Audio Input/Output Mode</span>
+                  <span style="font-size:0.75rem; font-weight:normal; color:var(--text-muted);">Choose your audio hardware</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span id="audio-mode-active-summary" style="font-size:0.78rem; font-weight:600; color:#38bdf8;">ESP32 Robot Active</span>
                 </div>
               </div>
-              <div style="display:flex; align-items:center; gap:8px;">
-                <span class="badge" id="esp32-hw-badge" style="background:#10b981; color:#fff; font-size:0.75rem; padding:4px 10px; border-radius:12px;">Connected</span>
-                <button class="btn btn-secondary btn-sm" id="btn-hw-speaker-test" title="Test MAX98357A Speaker with 440Hz tone" style="font-size:0.75rem;">🔊 Speaker Test</button>
+
+              <div class="audio-mode-cards-grid">
+                <!-- Option 1: ESP32 Robot Mode -->
+                <div class="audio-mode-card active" id="card-mode-esp32" onclick="selectAudioMode('esp32')" title="Switch to ESP32 Robot Mode">
+                  <div class="audio-mode-card-top">
+                    <span class="audio-mode-card-title">🤖 ESP32 Robot</span>
+                    <span class="audio-mode-badge-active" id="badge-active-esp32">Active</span>
+                  </div>
+                  <div class="audio-mode-card-desc" id="esp32-hw-status-desc">
+                    INMP441 Microphone (I2S) • MAX98357A Amplifier &amp; Speaker. Stationary robotic tutor hardware.
+                  </div>
+                  <div class="audio-mode-card-bottom">
+                    <span class="audio-mode-status-pill status-disconnected" id="esp32-mode-status">
+                      <span id="esp32-hw-dot">🔴</span>
+                      <span id="esp32-hw-badge">Checking...</span>
+                    </span>
+                    <button class="btn btn-secondary btn-sm" id="btn-hw-speaker-test" onclick="event.stopPropagation(); testSpeakerAudio();" title="Test MAX98357A Speaker with 440Hz tone" style="font-size:0.72rem; padding:2px 8px;">🔊 Tone Test</button>
+                  </div>
+                  <!-- Hidden bridge for existing title queries -->
+                  <span id="esp32-hw-status-title" style="display:none;">ESP32-S3 Audio Hardware</span>
+                </div>
+
+                <!-- Option 2: Laptop Audio Mode -->
+                <div class="audio-mode-card" id="card-mode-laptop" onclick="selectAudioMode('laptop')" title="Switch to Laptop Audio Mode">
+                  <div class="audio-mode-card-top">
+                    <span class="audio-mode-card-title">💻 Laptop Audio</span>
+                    <span class="audio-mode-badge-active" id="badge-active-laptop">Active</span>
+                  </div>
+                  <div class="audio-mode-card-desc">
+                    Laptop Built-in / USB Microphone &amp; Speakers via Web Audio API. Works anywhere without ESP32 hardware.
+                  </div>
+                  <div class="audio-mode-card-bottom">
+                    <span class="audio-mode-status-pill status-ready" id="laptop-mode-status">
+                      <span id="laptop-mode-dot">🟢</span>
+                      <span id="laptop-mode-text">Ready</span>
+                    </span>
+                    <button class="btn btn-secondary btn-sm" id="btn-laptop-mic-test" onclick="event.stopPropagation(); testLaptopMicPermission();" title="Test browser microphone permission" style="font-size:0.72rem; padding:2px 8px;">🎙️ Test Mic</button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -383,6 +421,63 @@
                   <button class="btn btn-secondary btn-sm" id="btn-cancel-assessment">Restart Sample</button>
                   <button class="btn btn-primary btn-sm" id="btn-finish-assessment" style="background:#f43f5e; border-color:#e11d48;">Finish & Submit Assessment ➔</button>
                 </div>
+              </div>
+            </div>
+
+            <!-- Mizo Robot Face & Emotion/Status Panel -->
+            <div class="mizo-face-card" id="mizo-face-panel" data-state="idle">
+              <!-- Developer Preview Toolbar -->
+              <div class="mizo-face-preview-bar" id="mizo-face-preview-controls">
+                <div class="mizo-preview-info">
+                  <span class="mizo-mode-pill live" id="mizo-face-mode-badge">● LIVE MODE</span>
+                  <span class="mizo-preview-label">Virtual Face Display (OLED/TFT Prototype)</span>
+                </div>
+                <div class="mizo-preview-btn-group" role="group" aria-label="Face Preview States">
+                  <button type="button" class="btn-face-preview" data-preview="idle" id="btn-preview-idle" title="Preview Idle State">Idle</button>
+                  <button type="button" class="btn-face-preview" data-preview="listening" id="btn-preview-listening" title="Preview Listening State">Listening</button>
+                  <button type="button" class="btn-face-preview" data-preview="thinking" id="btn-preview-thinking" title="Preview Thinking State">Thinking</button>
+                  <button type="button" class="btn-face-preview" data-preview="speaking" id="btn-preview-speaking" title="Preview Speaking State">Speaking</button>
+                  <button type="button" class="btn-face-preview" data-preview="error" id="btn-preview-error" title="Preview Error State">Error</button>
+                  <button type="button" class="btn-face-preview btn-preview-live" id="btn-preview-exit" title="Exit Preview and return to live voice updates">Exit Preview ↺</button>
+                </div>
+              </div>
+
+              <div class="mizo-face-inner">
+                <div class="mizo-face-visor">
+                  <div class="mizo-visor-screen-grid"></div>
+                  <div class="mizo-visor-glare"></div>
+                  <div class="mizo-listening-ring" id="mizo-listening-ring"></div>
+                  <div class="mizo-thinking-matrix" id="mizo-thinking-matrix">
+                    <span class="tdot td1"></span>
+                    <span class="tdot td2"></span>
+                    <span class="tdot td3"></span>
+                  </div>
+                  <div class="mizo-face-eyes">
+                    <div class="mizo-eye eye-left" id="mizo-eye-left">
+                      <div class="mizo-pupil"></div>
+                    </div>
+                    <div class="mizo-eye eye-right" id="mizo-eye-right">
+                      <div class="mizo-pupil"></div>
+                    </div>
+                  </div>
+                  <div class="mizo-face-mouth" id="mizo-face-mouth">
+                    <div class="mouth-neutral-line"></div>
+                    <div class="mouth-waves">
+                      <span class="m-wave w1"></span>
+                      <span class="m-wave w2"></span>
+                      <span class="m-wave w3"></span>
+                      <span class="m-wave w4"></span>
+                      <span class="m-wave w5"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="mizo-face-status-bar">
+                <div class="mizo-face-status-badge">
+                  <span class="mizo-status-indicator-dot dot-idle" id="mizo-face-status-dot"></span>
+                  <span class="mizo-status-text" id="mizo-face-status-label">Ready — Say "Hey Mizo" or tap to speak</span>
+                </div>
+                <div class="mizo-status-subtext" id="mizo-face-status-hint">Standing by • Say 'Hey Mizo' or tap to speak</div>
               </div>
             </div>
 
@@ -695,7 +790,9 @@
                 <label>Text-to-Speech Voice (Edge-TTS Neural):</label>
                 <select id="setting-tts-voice" class="form-control">
                   <option value="en-US-GuyNeural">English (US) — Guy (Warm, Encouraging Male)</option>
-                  <option value="en-US-JennyNeural">English (US) — Jenny (Friendly, Expressive Female)</option>
+                  <option value="en-US-ChristopherNeural">English (US) — Christopher (Crisp & Articulate Male — High Clarity)</option>
+                  <option value="en-US-AriaNeural">English (US) — Aria (Clear & Expressive Female — High Clarity)</option>
+                  <option value="en-US-JennyNeural">English (US) — Jenny (Friendly Female)</option>
                   <option value="en-IN-PrabhatNeural">English (India) — Prabhat (Natural Male)</option>
                   <option value="en-IN-NeerjaNeural">English (India) — Neerja (Warm Female)</option>
                   <option value="en-GB-SoniaNeural">English (UK) — Sonia (Polite Female)</option>
@@ -1083,7 +1180,8 @@
   <!-- Toast Notification -->
   <div class="toast" id="toast">Settings Saved</div>
 
-  <script src="/js/app.js?v=3.0.2"></script>
+  <script src="/js/mizo_face.js?v=3.0.4"></script>
+  <script src="/js/app.js?v=3.0.4"></script>
 </body>
 </html>
 

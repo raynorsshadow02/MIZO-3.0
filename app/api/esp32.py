@@ -6,10 +6,14 @@ import io
 import wave
 import struct
 import math
+import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
-from fastapi import APIRouter, UploadFile, File, Form, Header, HTTPException, Query, Response, Request
+from contextlib import contextmanager
+from fastapi import APIRouter, UploadFile, File, Form, Header, HTTPException, Query, Response, Request, Depends
 from fastapi.responses import FileResponse, JSONResponse
+
+logger = logging.getLogger("mizo.esp32")
 
 from app.config import settings
 from app.db.database import (
@@ -29,7 +33,14 @@ from app.db.database import (
     get_db_settings,
     get_conversation_history
 )
-from app.db.models import ESP32ChatRequest, ESP32ChatResponse, ESP32StartRequest, ESP32StartResponse
+from app.db.models import (
+    ESP32ChatRequest,
+    ESP32ChatResponse,
+    ESP32StartRequest,
+    ESP32StartResponse,
+    ESP32ManualActivateRequest,
+    ESP32ManualActivateResponse
+)
 from app.services.stt_service import stt_service
 from app.services.llm_service import llm_service, LLMServiceError
 from app.services.tts_service import tts_service
@@ -41,7 +52,18 @@ from app.services.speech_service import speech_service
 from app.services.agent_router import agent_router, AgentRoute, AgentRouter
 from app.services.normal_chat_service import normal_chat_service
 from app.services.onboarding_service import onboarding_service
-from app.services.voice_service import is_wake_word, is_stop_command, is_submit_command, classify_command_or_intent, voice_manager, VoiceState, detect_mizo_intent, ASSISTANT_NAME
+from app.services.voice_service import (
+    is_wake_word,
+    is_stop_command,
+    is_submit_command,
+    is_assessment_skip_command,
+    is_unclear_or_low_confidence_speech,
+    classify_command_or_intent,
+    voice_manager,
+    VoiceState,
+    detect_mizo_intent,
+    ASSISTANT_NAME
+)
 
 router = APIRouter(prefix="/api/v1/esp32", tags=["ESP32 Hardware"])
 
@@ -261,13 +283,14 @@ async def get_hardware_status():
 @router.get("/test_tone")
 async def get_speaker_test_audio():
     """
-    Returns a 16kHz 16-bit Mono WAV test tone (1-second 440Hz sine wave)
-    specifically designed to test the MAX98357A amplifier and external speaker.
+    Returns an enhanced 16kHz 16-bit Mono WAV test tone (1-second 440Hz sine wave)
+    with smooth anti-pop envelopes and clean amplitude for testing MAX98357A speaker clarity.
     """
     sample_rate = 16000
     duration = 1.0
     num_samples = int(sample_rate * duration)
     freq = 440.0
+    fade_samples = int(sample_rate * 0.05)  # 50ms anti-pop ramp
 
     buf = io.BytesIO()
     with wave.open(buf, 'wb') as wf:
@@ -276,7 +299,13 @@ async def get_speaker_test_audio():
         wf.setframerate(sample_rate)
         frames = bytearray()
         for i in range(num_samples):
-            val = int(math.sin(2 * math.pi * freq * (i / sample_rate)) * 12000)
+            # Smooth envelope at start and finish
+            env = 1.0
+            if i < fade_samples:
+                env = i / fade_samples
+            elif i > num_samples - fade_samples:
+                env = (num_samples - i) / fade_samples
+            val = int(math.sin(2 * math.pi * freq * (i / sample_rate)) * 22000 * env)
             frames.extend(struct.pack('<h', val))
         wf.writeframes(frames)
     buf.seek(0)
@@ -289,22 +318,102 @@ async def get_speaker_test_audio():
 
 @router.get("/audio/cache/{filename}")
 async def get_cached_audio(filename: str):
-    """Serves synthesized speech WAV files for ESP32 MAX98357A I2S playback."""
-    file_path = settings.AUDIO_CACHE_DIR / filename
+    """Serves synthesized speech audio files for ESP32 and browser playback."""
+    clean_filename = os.path.basename(filename)
+    file_path = settings.AUDIO_CACHE_DIR / clean_filename
     if not file_path.exists():
+        logger.warning(f"[Audio Serve] Requested audio file not found: {clean_filename}")
         raise HTTPException(status_code=404, detail="Audio file not found")
-    return FileResponse(path=str(file_path), media_type="audio/wav", filename=filename)
+
+    media_type = "audio/wav"
+    try:
+        with open(file_path, "rb") as f:
+            header = f.read(12)
+            if header.startswith(b"ID3") or (len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0):
+                media_type = "audio/mpeg"
+            elif header.startswith(b"RIFF") and b"WAVE" in header:
+                media_type = "audio/wav"
+    except Exception:
+        pass
+
+    logger.info(f"[Audio Serve] Serving audio file: {clean_filename} (size={file_path.stat().st_size} bytes, type={media_type})")
+    return FileResponse(path=str(file_path), media_type=media_type, filename=clean_filename)
 
 
 @router.get("/voice_state")
 async def get_voice_state():
-    """Returns current voice state and microphone active status."""
+    """Returns current voice state, microphone active status, and onboarding progress."""
+    voice_manager.check_inactivity_timeout()
+    onboarding_active = False
+    onboarding_step = "completed"
+    try:
+        student = get_prototype_student()
+        if student:
+            onboarding_active = not bool(student.get("onboarding_completed", False))
+            onboarding_step = student.get("onboarding_step") or "ask_name"
+    except Exception:
+        pass
+
     return {
         "success": True,
         "voice_state": voice_manager.state.value,
         "microphone_active": voice_manager.microphone_active,
-        "assistant_name": ASSISTANT_NAME
+        "manual_activation_active": voice_manager.is_manual_activation_active(),
+        "hardware_test_mode": getattr(settings, "HARDWARE_TEST_MODE", False),
+        "assistant_name": ASSISTANT_NAME,
+        "onboarding_active": onboarding_active,
+        "onboarding_step": onboarding_step
     }
+
+
+@router.get("/test_mode")
+@router.get("/hardware_test_mode")
+async def get_hardware_test_mode_status():
+    """Returns the current hardware test mode configuration status."""
+    return {
+        "hardware_test_mode": getattr(settings, "HARDWARE_TEST_MODE", False),
+        "description": "When active, POST /api/v1/esp32/audio processes speech directly without requiring a wake word."
+    }
+
+
+@router.post("/manual_activate", response_model=ESP32ManualActivateResponse)
+async def manual_voice_activate(
+    request: Request,
+    req: Optional[ESP32ManualActivateRequest] = None,
+    authenticated: bool = Depends(verify_device)
+):
+    """
+    Manually activates voice interaction override from dashboard button.
+    Bypasses wake-word requirement for the next valid speech capture from ESP32-S3 hardware.
+    Consumes manual activation once audio is processed, or times out safely.
+    """
+    client_ip = request.client.host if (request and request.client) else None
+    record_esp32_activity(client_ip, "manual_activate")
+
+    action = (req.action if req and req.action else "activate").lower()
+    timeout = float(req.timeout_seconds if req and req.timeout_seconds else 30.0)
+
+    if action == "toggle":
+        action = "deactivate" if voice_manager.is_manual_activation_active() else "activate"
+
+    if action == "deactivate":
+        voice_manager.deactivate_manual_mode("user_manual_deactivate")
+        return ESP32ManualActivateResponse(
+            success=True,
+            active=False,
+            voice_state=voice_manager.state.value,
+            message="Manual voice activation cancelled. Standby wake listening restored.",
+            timeout_seconds=0.0
+        )
+
+    voice_manager.activate_manual_mode(timeout_seconds=timeout)
+    return ESP32ManualActivateResponse(
+        success=True,
+        active=True,
+        voice_state=voice_manager.state.value,
+        message="Manual voice activation enabled. Speak into the INMP441 microphone (wake word not required).",
+        timeout_seconds=timeout
+    )
 
 
 @router.post("/start", response_model=ESP32StartResponse)
@@ -400,12 +509,87 @@ async def esp32_audio_status():
         "voice_state": voice_manager.state.value,
         "exclusive_hardware": True,
         "hardware_connected": is_connected,
+        "hardware_test_mode": getattr(settings, "HARDWARE_TEST_MODE", False),
         "input_device": "INMP441 I2S Microphone (ESP32-S3)",
         "output_device": "MAX98357A I2S Speaker (ESP32-S3)",
         "laptop_fallback_enabled": False,
         "instructions": "Send POST multipart/form-data with 'audio' (.wav) to interact with Mizo.",
         "supported_formats": ["wav", "pcm", "mp3"]
     }
+
+
+def _analyze_audio_signal(audio_bytes: bytes) -> Dict[str, Any]:
+    """
+    Non-destructive diagnostic analyzer for incoming audio from ESP32 INMP441:
+    Measures duration, sample rate, bit depth, channel count, peak amplitude, and RMS.
+    Ensures safe logging without leaking raw audio or conversation content.
+    """
+    info = {
+        "format": "unknown",
+        "size_bytes": len(audio_bytes) if audio_bytes else 0,
+        "channels": 0,
+        "sample_rate": 0,
+        "bit_depth": 0,
+        "duration_seconds": 0.0,
+        "peak": 0,
+        "rms": 0.0,
+        "dbfs": -99.0,
+        "is_silent": True,
+    }
+    if not audio_bytes:
+        return info
+
+    if audio_bytes.startswith(b"RIFF") and len(audio_bytes) >= 44:
+        try:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+                info["format"] = "wav"
+                info["channels"] = wf.getnchannels()
+                sample_width = wf.getsampwidth()
+                info["bit_depth"] = sample_width * 8
+                info["sample_rate"] = wf.getframerate()
+                nframes = wf.getnframes()
+                info["duration_seconds"] = nframes / float(info["sample_rate"]) if info["sample_rate"] > 0 else 0.0
+
+                raw_frames = wf.readframes(nframes)
+                if sample_width == 2 and raw_frames:
+                    sample_count = len(raw_frames) // 2
+                    step = max(1, sample_count // 16000)
+                    samples = struct.unpack(f"<{sample_count}h", raw_frames)[::step]
+                    if samples:
+                        peak = max(abs(s) for s in samples)
+                        sum_sq = sum(s * s for s in samples)
+                        rms = math.sqrt(sum_sq / len(samples))
+                        dbfs = 20 * math.log10(rms / 32768.0) if rms > 0 else -99.0
+                        info["peak"] = peak
+                        info["rms"] = round(rms, 2)
+                        info["dbfs"] = round(dbfs, 1)
+                        info["is_silent"] = (rms < 120.0 and peak < 350)
+        except Exception as e:
+            info["format"] = f"wav_parse_error: {e}"
+    else:
+        if len(audio_bytes) % 2 == 0:
+            sample_count = len(audio_bytes) // 2
+            step = max(1, sample_count // 16000)
+            try:
+                samples = struct.unpack(f"<{sample_count}h", audio_bytes)[::step]
+                if samples:
+                    peak = max(abs(s) for s in samples)
+                    sum_sq = sum(s * s for s in samples)
+                    rms = math.sqrt(sum_sq / len(samples))
+                    dbfs = 20 * math.log10(rms / 32768.0) if rms > 0 else -99.0
+                    info["format"] = "raw_pcm_16bit"
+                    info["channels"] = 1
+                    info["sample_rate"] = 16000
+                    info["bit_depth"] = 16
+                    info["duration_seconds"] = sample_count / 16000.0
+                    info["peak"] = peak
+                    info["rms"] = round(rms, 2)
+                    info["dbfs"] = round(dbfs, 1)
+                    info["is_silent"] = (rms < 120.0 and peak < 350)
+            except Exception:
+                pass
+
+    return info
 
 
 @router.post("/audio")
@@ -415,26 +599,109 @@ async def process_esp32_audio(
     student_id: int = Form(1),
     session_id: Optional[str] = Form(None),
     mode: Optional[str] = Form(None),
-    format: str = Query("json", description="Response format: 'json' or 'audio'")
+    format: str = Query("json", description="Response format: 'json' or 'audio'"),
+    test_mode: Optional[bool] = Query(None, description="Hardware test mode: bypass wake word")
 ):
     """
     Core Hardware Voice Pipeline for ESP32-S3 + INMP441 Microphone + MAX98357A Speaker.
-    1. Receives recorded audio from ESP32.
-    2. Transcribes via STT (Groq Whisper / OpenAI Whisper / Faster-Whisper). Real errors, no mock text.
-    3. Handles Onboarding State Machine & multi-field information extraction.
-    4. Handles 1-2 minute speaking assessment evaluation & baseline establishment.
-    5. Dispatches to LLM Router with dynamic personalized context.
-    6. Synthesizes 16kHz 16-bit Mono WAV audio for MAX98357A I2S DAC.
-    7. Returns either direct WAV audio stream (format=audio) or JSON metadata (format=json).
+    Protected by active turn scope to prevent premature timeouts during STT, LLM, or TTS.
     """
+    voice_manager.check_inactivity_timeout()
+    voice_manager.begin_turn()
+    try:
+        return await _process_esp32_audio_core(
+            request=request,
+            audio=audio,
+            student_id=student_id,
+            session_id=session_id,
+            mode=mode,
+            format=format,
+            test_mode=test_mode,
+            is_laptop=False
+        )
+    finally:
+        voice_manager.end_turn()
+
+
+@router.post("/audio/laptop")
+async def process_esp32_laptop_audio(
+    request: Request,
+    audio: UploadFile = File(...),
+    student_id: int = Form(1),
+    session_id: Optional[str] = Form(None),
+    mode: Optional[str] = Form(None),
+    format: str = Query("json", description="Response format: 'json' or 'audio'"),
+    test_mode: Optional[bool] = Query(None, description="Test mode: bypass wake word")
+):
+    """
+    Laptop Audio Processing Endpoint on ESP32 Router.
+    Uses browser microphone and laptop speakers without affecting ESP32 connection state.
+    """
+    voice_manager.check_inactivity_timeout()
+    voice_manager.begin_turn()
+    try:
+        return await _process_esp32_audio_core(
+            request=request,
+            audio=audio,
+            student_id=student_id,
+            session_id=session_id,
+            mode=mode,
+            format=format,
+            test_mode=test_mode,
+            is_laptop=True
+        )
+    finally:
+        voice_manager.end_turn()
+
+
+async def _process_esp32_audio_core(
+    request: Request,
+    audio: UploadFile,
+    student_id: int = 1,
+    session_id: Optional[str] = None,
+    mode: Optional[str] = None,
+    format: str = "json",
+    test_mode: Optional[bool] = None,
+    is_laptop: bool = False
+):
     client_ip = request.client.host if (request and request.client) else None
-    record_esp32_activity(client_ip, "audio_upload")
+    if not is_laptop:
+        record_esp32_activity(client_ip, "audio_upload")
+
+    # Read uploaded audio bytes
+    audio_bytes = await audio.read()
+    if is_laptop and len(audio_bytes) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Audio file exceeds 15MB limit")
+
+    if not is_laptop:
+        # Diagnostic analysis of physical audio signal from INMP441
+        diag = _analyze_audio_signal(audio_bytes)
+        print(
+            f"[AUDIO_DIAG] INMP441 audio received: {diag['size_bytes']} bytes, format={diag['format']}, "
+            f"{diag['duration_seconds']:.2f}s, {diag['sample_rate']}Hz, {diag['channels']}ch, {diag['bit_depth']}bit, "
+            f"Peak={diag['peak']}/32768, RMS={diag['rms']} ({diag['dbfs']} dBFS), "
+            f"silent={diag['is_silent']}",
+            flush=True
+        )
+        now = time.time()
+        last_upload = _esp32_hardware_state.get("last_audio_upload_timestamp")
+        if last_upload and (now - last_upload) < 1.0:
+            print(f"[AUDIO_DIAG] Warning: Rapid consecutive/overlapping audio chunk received ({now - last_upload:.2f}s since previous chunk)", flush=True)
+        _esp32_hardware_state["last_audio_upload_timestamp"] = now
+    else:
+        print(f"[LAPTOP_AUDIO] Received audio chunk: {len(audio_bytes)} bytes, filename='{audio.filename}', format='{format}'", flush=True)
+
+    # Determine whether hardware test mode is active
+    is_hw_test = (test_mode is True) or (test_mode is None and getattr(settings, "HARDWARE_TEST_MODE", False))
+    if is_hw_test:
+        print(f"\n[HARDWARE_TEST] Stage 1/4: Audio received ({len(audio_bytes)} bytes, filename='{audio.filename}', format='{format}', client={client_ip})", flush=True)
 
     # 1. Save uploaded audio temporarily
     file_ext = Path(audio.filename or "recording.wav").suffix or ".wav"
-    temp_in_path = settings.AUDIO_CACHE_DIR / f"esp32_in_{uuid.uuid4().hex[:8]}{file_ext}"
+    prefix = "laptop_in_" if is_laptop else "esp32_in_"
+    temp_in_path = settings.AUDIO_CACHE_DIR / f"{prefix}{uuid.uuid4().hex[:8]}{file_ext}"
     with open(temp_in_path, "wb") as f:
-        f.write(await audio.read())
+        f.write(audio_bytes)
 
     transcript = ""
     measured_duration_seconds = 0.0
@@ -460,30 +727,38 @@ async def process_esp32_audio(
             except Exception:
                 pass
 
-    # 3. Classify Command or Intent BEFORE standard LLM/dialogue processing
     clean_transcript = transcript.strip() if transcript else ""
+    print(f"[AUDIO_DIAG] STT transcription: \"{clean_transcript}\" (duration={measured_duration_seconds:.2f}s, lang={stt_metadata.get('language')})", flush=True)
+
+    # Hardware Test Mode Stage 2 logging
+    if is_hw_test:
+        voice_manager.consume_manual_activation()
+        print(f"[HARDWARE_TEST] Stage 2/4: Transcription completed: \"{clean_transcript}\" (duration={measured_duration_seconds:.2f}s, lang={stt_metadata.get('language')})", flush=True)
+
+    # 3. Classify Command or Intent BEFORE standard LLM/dialogue processing
     cmd_intent = classify_command_or_intent(clean_transcript)
 
     # 4. Check for "Stop Mizo" control command (Deterministic Tier 0)
+    # Stop command must interrupt Mizo promptly, halt playback, and NEVER return audio.
     if clean_transcript and (cmd_intent == "STOP" or is_stop_command(clean_transcript)):
         voice_manager.handle_stop_command()
-        reply_msg = "I'm pausing now. Whenever you're ready to talk again, just say 'Hey Mizo'."
-        audio_url, wav_path = await tts_service.synthesize_to_file(reply_msg)
-        if format == "audio":
-            return FileResponse(path=wav_path, media_type="audio/wav", filename="reply.wav")
-        return {
-            "success": True,
-            "is_control_command": True,
-            "command": "stop",
-            "transcript": transcript,
-            "reply_text": reply_msg,
-            "audio_url": audio_url,
-            "voice_state": "PAUSED"
-        }
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "is_control_command": True,
+                "command": "stop",
+                "transcript": transcript,
+                "reply_text": "",
+                "audio_url": None,
+                "voice_state": "STANDBY"
+            }
+        )
 
     # 5. Check student & onboarding status
-    student_id = PROTOTYPE_STUDENT_ID
-    student = _require_primary_student()
+    resolved_student = (get_student(int(student_id)) if student_id else None) or _require_primary_student()
+    student_id = resolved_student["id"]
+    student = resolved_student
 
     st_name = (student.get("name") or "").strip()
     is_name_known = bool(st_name and st_name.lower() not in ["new learner", "student", "there", "unknown", ""])
@@ -492,7 +767,110 @@ async def process_esp32_audio(
     if onboarding_active and is_name_known and current_step in ["ask_name", "new_student", "welcome"]:
         current_step = "ask_goals"
 
-    # Handle silence or missing speech
+    manual_active = voice_manager.is_manual_activation_active()
+    is_standby = voice_manager.state in [
+        VoiceState.WAKE_LISTENING, VoiceState.STANDBY, VoiceState.SLEEP,
+        VoiceState.SNOOZED, VoiceState.PAUSED, VoiceState.WAKE_ONLY
+    ]
+
+    # 6. STANDBY / WAKE_LISTENING GATING
+    # In standby mode, ONLY wake phrases ("Hey Mizo", etc.) or explicit test mode / manual activation can activate Mizo.
+    # Non-wake speech, background noise, or silence MUST be ignored cleanly without producing audio.
+    if is_standby and not manual_active and not is_hw_test:
+        if not clean_transcript or clean_transcript in ["[Speech Recognition Error]", ""]:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "success": True,
+                    "ignored": True,
+                    "transcript": "",
+                    "reply_text": "",
+                    "audio_url": None,
+                    "voice_state": "STANDBY"
+                }
+            )
+
+        state_before = voice_manager.state.value
+        is_wake, trailing_speech = is_wake_word(clean_transcript, log_debug=False)
+        is_explicit_resume = clean_transcript.strip().lower() in ["resume", "continue", "start"]
+        if not (is_wake or is_explicit_resume):
+            voice_manager.log(f'Heard: "{clean_transcript}"')
+            voice_manager.log("No wake word. Ignoring.")
+            voice_manager.log("Wake word not detected. Ignoring.")
+            print(f"[WAKE_DIAG] State before: {state_before} | Transcript: '{clean_transcript}' | Wake match: False | Reason: No wake greeting or Mizo name variant detected | State after: {voice_manager.state.value}", flush=True)
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "success": True,
+                    "ignored": True,
+                    "transcript": transcript,
+                    "reply_text": "",
+                    "audio_url": None,
+                    "voice_state": "STANDBY"
+                }
+            )
+
+        # Wake phrase detected!
+        voice_manager.touch_interaction()
+        voice_manager.log(f'Heard: "{clean_transcript}"')
+        voice_manager.log("Wake word detected: Mizo")
+        voice_manager.log("Wake word detected")
+        voice_manager.log("Waking assistant")
+        voice_manager.transition_to(VoiceState.ACTIVE_LISTENING, "wake_word_detected")
+
+        print(f"[WAKE_DIAG] State before: {state_before} | Transcript: '{transcript.strip()}' | Wake match: True | Reason: Valid wake phrase recognized | State after: {voice_manager.state.value}", flush=True)
+
+        if trailing_speech:
+            clean_transcript = trailing_speech
+            voice_manager.transition_to(VoiceState.ONBOARDING if onboarding_active else VoiceState.ACTIVE_CONVERSATION, "wake_with_speech")
+        else:
+            voice_manager.log("Listening for user request")
+            if is_name_known or student.get("onboarding_completed", False):
+                reply_msg = f"Yes, {st_name}? I'm listening." if is_name_known else "Yes, I'm listening."
+                voice_manager.transition_to(VoiceState.ACTIVE_LISTENING, "wake_ready")
+            elif onboarding_active and current_step in ["ask_name", "welcome"]:
+                reply_msg = "Hi! I'm Mizo. Before we begin, I'd like to get to know you. What's your name?"
+                voice_manager.transition_to(VoiceState.ONBOARDING, "start_onboarding")
+                active_session = resolve_prototype_session(None, default_mode=mode or "coach")
+                curr_session_id = active_session["session_id"]
+                add_conversation_message(
+                    student_id=student_id,
+                    session_id=curr_session_id,
+                    role="assistant",
+                    content=reply_msg,
+                    learning_mode="coach",
+                    onboarding_state="ask_name"
+                )
+            else:
+                reply_msg = "Yes, I'm listening."
+                voice_manager.transition_to(VoiceState.ACTIVE_LISTENING, "wake_ready")
+
+            audio_url, wav_path = await tts_service.synthesize_to_file(reply_msg)
+            voice_manager.handle_speaking_start()
+            voice_manager.handle_speaking_ended()
+            if format == "audio":
+                return FileResponse(
+                    path=wav_path,
+                    media_type="audio/wav",
+                    filename="reply.wav",
+                    headers={
+                        "X-Voice-State": "ACTIVE_LISTENING",
+                        "X-Transcript": clean_transcript[:100],
+                        "X-Wake-Detected": "true"
+                    }
+                )
+            return {
+                "success": True,
+                "activated": True,
+                "transcript": transcript,
+                "reply_text": reply_msg,
+                "audio_url": audio_url,
+                "onboarding_active": onboarding_active,
+                "onboarding_step": current_step,
+                "voice_state": "ACTIVE"
+            }
+
+    # Handle silence or missing speech in active mode (do NOT reset inactivity timer on silence/empty input)
     if not clean_transcript or clean_transcript in ["[Speech Recognition Error]", ""]:
         if onboarding_active:
             retry_msg = "I couldn't hear that clearly. Could you say that again?"
@@ -509,15 +887,6 @@ async def process_esp32_audio(
                 "detail": "No audible speech detected; repeating prompt."
             }
         else:
-            if voice_manager.state in [VoiceState.STANDBY, VoiceState.SLEEP, VoiceState.SNOOZED, VoiceState.PAUSED]:
-                return {
-                    "success": True,
-                    "ignored": True,
-                    "transcript": "",
-                    "reply_text": "",
-                    "audio_url": None,
-                    "voice_state": voice_manager.state.value
-                }
             silence_msg = "I had trouble hearing your audio clearly. Could you please try speaking again or check your microphone?"
             audio_url, wav_path = await tts_service.synthesize_to_file(silence_msg)
             if format == "audio":
@@ -530,41 +899,107 @@ async def process_esp32_audio(
                 "detail": "No audible speech or STT failure detected"
             }
 
-    # 6. WAKE_LISTENING / SNOOZED / STANDBY / PAUSED State Machine
-    if voice_manager.state in [VoiceState.WAKE_LISTENING, VoiceState.STANDBY, VoiceState.SLEEP, VoiceState.SNOOZED, VoiceState.PAUSED, VoiceState.WAKE_ONLY]:
+    # Unreliable speech recognition & low confidence handling in active mode
+    is_unclear, unclear_reason = is_unclear_or_low_confidence_speech(
+        clean_transcript,
+        stt_metadata=stt_metadata,
+        duration_seconds=measured_duration_seconds
+    )
+    if is_unclear:
+        voice_manager.log(f"Unclear speech rejected ({unclear_reason}): '{clean_transcript}'")
+        unclear_msg = "Sorry, I didn't catch that. Could you repeat it?"
+        audio_url, wav_path = await tts_service.synthesize_to_file(unclear_msg)
+        if format == "audio":
+            return FileResponse(path=wav_path, media_type="audio/wav", filename="reply.wav")
+        return {
+            "success": True,
+            "transcript": clean_transcript or "[Unclear Speech]",
+            "reply_text": unclear_msg,
+            "audio_url": audio_url,
+            "onboarding_active": onboarding_active,
+            "onboarding_step": current_step,
+            "voice_state": voice_manager.state.value,
+            "detail": f"Unclear speech detected ({unclear_reason})"
+        }
+
+    # Meaningful user speech verified: reset conversation inactivity timer
+    voice_manager.touch_interaction()
+
+    # Manual Active or HW Test Turn Processing
+    if manual_active or is_hw_test:
+        if manual_active:
+            voice_manager.consume_manual_activation()
+            voice_manager.log(f'Manual voice activation turn active: "{clean_transcript}"')
+        if is_hw_test:
+            voice_manager.log(f'Hardware test mode turn active: "{clean_transcript}"')
         is_wake, trailing_speech = is_wake_word(clean_transcript, log_debug=False)
-        is_explicit_resume = clean_transcript.strip().lower() in ["resume", "continue", "start"]
-        if is_wake or is_explicit_resume:
-            voice_manager.log(f'Heard: "{clean_transcript}"')
-            voice_manager.log("Wake word detected: Mizo")
-            voice_manager.log("Wake word detected")
-            voice_manager.log("Waking assistant")
-            voice_manager.transition_to(VoiceState.ACTIVE_LISTENING, "wake_word_detected")
+        if is_wake and not trailing_speech:
+            voice_manager.log("Listening for user request")
+            if is_name_known or student.get("onboarding_completed", False):
+                reply_msg = f"Yes, {st_name}? I'm listening." if is_name_known else "Yes, I'm listening."
+                voice_manager.transition_to(VoiceState.ACTIVE_LISTENING, "wake_ready")
+            elif onboarding_active and current_step in ["ask_name", "welcome"]:
+                reply_msg = "Hi! I'm Mizo. Before we begin, I'd like to get to know you. What's your name?"
+                voice_manager.transition_to(VoiceState.ONBOARDING, "start_onboarding")
+                active_session = resolve_prototype_session(None, default_mode=mode or "coach")
+                curr_session_id = active_session["session_id"]
+                add_conversation_message(
+                    student_id=student_id,
+                    session_id=curr_session_id,
+                    role="assistant",
+                    content=reply_msg,
+                    learning_mode="coach",
+                    onboarding_state="ask_name"
+                )
+            else:
+                reply_msg = "Yes, I'm listening."
+                voice_manager.transition_to(VoiceState.ACTIVE_LISTENING, "wake_ready")
+
+            if is_hw_test:
+                print(f"[HARDWARE_TEST] Stage 3/4: AI response generated [system]: \"{reply_msg}\"", flush=True)
+            audio_url, wav_path = await tts_service.synthesize_to_file(reply_msg)
+            if is_hw_test:
+                print(f"[HARDWARE_TEST] Stage 4/4: Response audio returned ({wav_path}, format={format})\n", flush=True)
+            voice_manager.handle_speaking_start()
+            voice_manager.handle_speaking_ended()
+            if format == "audio":
+                return FileResponse(path=wav_path, media_type="audio/wav", filename="reply.wav")
+            return {
+                "success": True,
+                "activated": True,
+                "transcript": transcript,
+                "reply_text": reply_msg,
+                "audio_url": audio_url,
+                "onboarding_active": onboarding_active,
+                "onboarding_step": current_step,
+                "voice_state": "ACTIVE"
+            }
+        else:
+            if is_wake and trailing_speech:
+                clean_transcript = trailing_speech
+            voice_manager.transition_to(VoiceState.ONBOARDING if onboarding_active else VoiceState.ACTIVE_CONVERSATION, "test_or_manual_activation_processed")
+    elif voice_manager.state == VoiceState.SPEAKING:
+        voice_manager.handle_barge_in(clean_transcript)
+        if cmd_intent == "STOP" or is_stop_command(clean_transcript):
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "success": True,
+                    "is_control_command": True,
+                    "command": "stop",
+                    "transcript": transcript,
+                    "reply_text": "",
+                    "audio_url": None,
+                    "voice_state": "STANDBY"
+                }
+            )
+    else:
+        is_wake, trailing_speech = is_wake_word(clean_transcript, log_debug=False)
+        if is_wake:
             if trailing_speech:
                 clean_transcript = trailing_speech
-                voice_manager.transition_to(VoiceState.ONBOARDING if onboarding_active else VoiceState.ACTIVE_CONVERSATION, "wake_with_speech")
             else:
-                voice_manager.log("Listening for user request")
-                if is_name_known or student.get("onboarding_completed", False):
-                    reply_msg = f"Yes, {st_name}? I'm listening." if is_name_known else "Yes, I'm listening."
-                    voice_manager.transition_to(VoiceState.ACTIVE_LISTENING, "wake_ready")
-                elif onboarding_active and current_step in ["ask_name", "welcome"]:
-                    reply_msg = "Hi! I'm Mizo. Before we begin, I'd like to get to know you. What's your name?"
-                    voice_manager.transition_to(VoiceState.ONBOARDING, "start_onboarding")
-                    active_session = resolve_prototype_session(None, default_mode=mode or "coach")
-                    curr_session_id = active_session["session_id"]
-                    add_conversation_message(
-                        student_id=student_id,
-                        session_id=curr_session_id,
-                        role="assistant",
-                        content=reply_msg,
-                        learning_mode="coach",
-                        onboarding_state="ask_name"
-                    )
-                else:
-                    reply_msg = "Yes, I'm listening."
-                    voice_manager.transition_to(VoiceState.ACTIVE_LISTENING, "wake_ready")
-
+                reply_msg = f"Yes, {st_name}? I'm listening." if is_name_known else "Yes, I'm listening."
                 audio_url, wav_path = await tts_service.synthesize_to_file(reply_msg)
                 voice_manager.handle_speaking_start()
                 voice_manager.handle_speaking_ended()
@@ -580,34 +1015,6 @@ async def process_esp32_audio(
                     "onboarding_step": current_step,
                     "voice_state": "ACTIVE"
                 }
-        else:
-            voice_manager.log(f'Heard: "{clean_transcript}"')
-            voice_manager.log("No wake word. Ignoring.")
-            voice_manager.log("Wake word not detected. Ignoring.")
-            return {
-                "success": True,
-                "ignored": True,
-                "transcript": transcript,
-                "reply_text": "",
-                "audio_url": None,
-                "voice_state": "STANDBY"
-            }
-    elif voice_manager.state == VoiceState.SPEAKING:
-        voice_manager.handle_barge_in(clean_transcript)
-        if cmd_intent == "STOP" or is_stop_command(clean_transcript):
-            return {
-                "success": True,
-                "is_control_command": True,
-                "command": "stop",
-                "transcript": transcript,
-                "reply_text": "",
-                "audio_url": None,
-                "voice_state": "STANDBY"
-            }
-    else:
-        is_wake, trailing_speech = is_wake_word(clean_transcript, log_debug=False)
-        if is_wake and trailing_speech:
-            clean_transcript = trailing_speech
 
     # 7. Identity & Name Commands (Interception before regular dialogue)
     active_session = resolve_prototype_session(session_id, default_mode=mode or "coach")
@@ -791,6 +1198,52 @@ async def process_esp32_audio(
 
     if onboarding_active:
         voice_manager.transition_to(VoiceState.ONBOARDING, "onboarding_active")
+
+        # Check for assessment skip / deferral commands
+        is_skip_requested = is_assessment_skip_command(clean_transcript) or cmd_intent == "SKIP_ASSESSMENT"
+        if is_skip_requested:
+            update_student(student_id, {
+                "assessment_deferred": 1,
+                "onboarding_completed": True,
+                "onboarding_step": "completed"
+            })
+            onboarding_active = False
+            reply_text = "No problem at all! We can skip the assessment for now and just talk normally. What would you like to discuss today?"
+            voice_manager.transition_to(VoiceState.READY, "assessment_skipped")
+            audio_url, wav_path = await tts_service.synthesize_to_file(reply_text)
+            add_conversation_message(
+                student_id=student_id,
+                session_id=curr_session_id,
+                role="user",
+                content=clean_transcript,
+                learning_mode=active_mode
+            )
+            add_conversation_message(
+                student_id=student_id,
+                session_id=curr_session_id,
+                role="assistant",
+                content=reply_text,
+                audio_path=audio_url,
+                learning_mode=active_mode,
+                onboarding_state="completed",
+                intent="skip_assessment"
+            )
+            if format == "audio":
+                return FileResponse(path=wav_path, media_type="audio/wav", filename="reply.wav")
+            return {
+                "success": True,
+                "transcript": clean_transcript,
+                "reply_text": reply_text,
+                "audio_url": audio_url,
+                "learning_mode": active_mode,
+                "session_id": curr_session_id,
+                "provider_used": "system",
+                "onboarding_active": False,
+                "onboarding_step": "completed",
+                "voice_state": voice_manager.state.value,
+                "detail": "Assessment deferred by user request."
+            }
+
         is_assessment_step = current_step in [personalization_service.STATE_ASSESSMENT, "SPEECH_TEST_PROMPT", "SPEECH_EVALUATION", "speech_test_prompt", "speaking_assessment"] or cmd_intent == "SUBMIT"
 
         if is_assessment_step:
@@ -807,7 +1260,7 @@ async def process_esp32_audio(
 
             # Check if this single sample is very brief and cumulative words is under 40 and first sample
             if words_in_transcript < 12 and cum_words < 40 and samples_cnt <= 1:
-                retry_msg = "Please share a little more about yourself or your projects so I can calibrate our lessons accurately."
+                retry_msg = "That sample was a bit too short. Please share a little more about yourself or your projects so I can calibrate our lessons accurately."
                 audio_url, wav_path = await tts_service.synthesize_to_file(retry_msg)
                 voice_manager.transition_to(VoiceState.ASSESSMENT, "retry_assessment")
                 if format == "audio":
@@ -898,15 +1351,33 @@ async def process_esp32_audio(
                 next_step = personalization_service.determine_next_onboarding_state(updated_student, current_step)
                 update_student(student_id, {"onboarding_step": next_step})
 
+                recent_turns = get_conversation_history(student_id=student_id, session_id=curr_session_id, limit=6)
+                assessment_status = (
+                    "deferred" if updated_student.get("assessment_deferred")
+                    else ("completed" if updated_student.get("onboarding_completed")
+                          else "active" if next_step in ["speech_test_prompt", "speaking_assessment"]
+                          else "pending")
+                )
+
                 system_prompt = personalization_service.build_onboarding_turn_prompt(
                     student=updated_student,
                     current_step=current_step,
                     next_step=next_step,
-                    user_answer=clean_transcript
+                    user_answer=clean_transcript,
+                    recent_history=recent_turns,
+                    assessment_status=assessment_status
                 )
-                messages = [{"role": "user", "content": clean_transcript}]
+                dialogue_msgs = []
+                for turn in (recent_turns or [])[-4:]:
+                    r = "assistant" if turn.get("role") == "assistant" else "user"
+                    c = (turn.get("content") or "").strip()
+                    if c:
+                        dialogue_msgs.append({"role": r, "content": c})
+                if not dialogue_msgs or dialogue_msgs[-1].get("content") != clean_transcript:
+                    dialogue_msgs.append({"role": "user", "content": clean_transcript})
+
                 try:
-                    llm_res = await llm_service.generate_response(messages=messages, system_prompt=system_prompt)
+                    llm_res = await llm_service.generate_response(messages=dialogue_msgs, system_prompt=system_prompt)
                     reply_text = llm_res.text
                     provider_used = f"{llm_res.provider} ({llm_res.model})"
                     is_fallback = llm_res.is_fallback
@@ -1033,6 +1504,9 @@ async def process_esp32_audio(
         )
         next_step = "completed"
 
+    if is_hw_test:
+        print(f"[HARDWARE_TEST] Stage 3/4: AI response generated [{provider_used}]: \"{reply_text}\"", flush=True)
+
     # Synthesize Speech (16kHz Mono WAV for MAX98357A)
     voice_manager.handle_speaking_start()
     try:
@@ -1042,41 +1516,68 @@ async def process_esp32_audio(
         audio_url, wav_path = None, None
     voice_manager.handle_speaking_ended()
 
+    if is_hw_test:
+        print(f"[HARDWARE_TEST] Stage 4/4: Response audio returned ({wav_path}, format={format})\n", flush=True)
+
     if not onboarding_active and voice_manager.state != VoiceState.READY:
         voice_manager.transition_to(VoiceState.READY, "turn_complete")
 
-    # Log to conversations database
-    add_conversation_message(
-        student_id=student_id,
-        session_id=curr_session_id,
-        role="user",
-        content=clean_transcript,
-        grammar_errors=grammar_errors,
-        vocabulary_suggestions=vocab_suggestions,
-        fluency_score=fluency_score,
-        pacing_score=pacing_score,
-        confidence_score=confidence_score,
-        learning_mode="coach" if onboarding_active else detected_mode,
-        onboarding_state=current_step if onboarding_active else None,
-        provider_used=provider_used,
-        is_fallback=is_fallback,
-        latency_ms=latency_ms
-    )
-    add_conversation_message(
-        student_id=student_id,
-        session_id=curr_session_id,
-        role="assistant",
-        content=reply_text,
-        audio_path=audio_url,
-        learning_mode="coach" if onboarding_active else detected_mode,
-        onboarding_state=next_step if onboarding_active else None,
-        provider_used=provider_used,
-        is_fallback=is_fallback,
-        latency_ms=latency_ms
-    )
+    # Log to conversations database with rapid retry deduplication
+    recent_msgs = get_conversation_history(student_id=student_id, session_id=curr_session_id, limit=2)
+    is_dup = False
+    if recent_msgs:
+        for prev in reversed(recent_msgs):
+            if prev.get("role") == "user" and prev.get("content", "").strip() == clean_transcript:
+                is_dup = True
+                break
 
-    if format == "audio" and wav_path:
-        return FileResponse(path=wav_path, media_type="audio/wav", filename="reply.wav")
+    if not is_dup:
+        add_conversation_message(
+            student_id=student_id,
+            session_id=curr_session_id,
+            role="user",
+            content=clean_transcript,
+            grammar_errors=grammar_errors,
+            vocabulary_suggestions=vocab_suggestions,
+            fluency_score=fluency_score,
+            pacing_score=pacing_score,
+            confidence_score=confidence_score,
+            learning_mode="coach" if onboarding_active else detected_mode,
+            onboarding_state=current_step if onboarding_active else None,
+            provider_used=provider_used,
+            is_fallback=is_fallback,
+            latency_ms=latency_ms
+        )
+        add_conversation_message(
+            student_id=student_id,
+            session_id=curr_session_id,
+            role="assistant",
+            content=reply_text,
+            audio_path=audio_url,
+            learning_mode="coach" if onboarding_active else detected_mode,
+            onboarding_state=next_step if onboarding_active else None,
+            provider_used=provider_used,
+            is_fallback=is_fallback,
+            latency_ms=latency_ms
+        )
+        if is_hw_test:
+            print(f"[HARDWARE_TEST] Persisted conversation messages for student_id={student_id}, session_id='{curr_session_id}'", flush=True)
+    else:
+        if is_hw_test:
+            print(f"[HARDWARE_TEST] Duplicate turn detected for student_id={student_id}, session_id='{curr_session_id}'. Skipped saving duplicate.", flush=True)
+
+    if format == "audio":
+        headers = {
+            "X-Voice-State": voice_manager.state.value if hasattr(voice_manager.state, 'value') else str(voice_manager.state),
+            "X-Transcript": clean_transcript[:100]
+        }
+        if wav_path and Path(wav_path).exists():
+            return FileResponse(path=wav_path, media_type="audio/wav", filename="reply.wav", headers=headers)
+        else:
+            fallback_filename = f"mizo_fallback_{uuid.uuid4().hex[:8]}.wav"
+            fallback_path = settings.AUDIO_CACHE_DIR / fallback_filename
+            tts_service._generate_fallback_wav(fallback_path, reply_text)
+            return FileResponse(path=str(fallback_path), media_type="audio/wav", filename="reply.wav", headers=headers)
 
     latest_student = get_student(student_id) or {}
     updated_session = get_session_by_id(curr_session_id) or {}
@@ -1116,7 +1617,18 @@ async def process_esp32_chat(req: ESP32ChatRequest):
     """
     Lightweight JSON text endpoint for ESP32 or client simulator test:
     Takes text string -> Generates real AI response via Llama 3.3/fallbacks + TTS WAV audio.
+    Guarded by active turn scope to prevent premature timeouts during inference/TTS.
     """
+    voice_manager.check_inactivity_timeout()
+    voice_manager.begin_turn()
+    try:
+        return await _process_esp32_chat_core(req)
+    finally:
+        voice_manager.end_turn()
+
+
+async def _process_esp32_chat_core(req: ESP32ChatRequest):
+    """Core logic for text chat request."""
     transcript = req.message.strip()
     student_id = PROTOTYPE_STUDENT_ID
     session_id = req.session_id
@@ -1144,7 +1656,8 @@ async def process_esp32_chat(req: ESP32ChatRequest):
         )
 
     # 3. Check student & onboarding state
-    student = _require_primary_student()
+    student = (get_student(req.student_id) if req.student_id else None) or _require_primary_student()
+    student_id = student["id"]
 
     st_name = (student.get("name") or "").strip()
     is_name_known = bool(st_name and st_name.lower() not in ["new learner", "student", "there", "unknown", ""])
@@ -1153,6 +1666,24 @@ async def process_esp32_chat(req: ESP32ChatRequest):
     if onboarding_active and is_name_known and current_step in ["ask_name", "new_student", "welcome"]:
         current_step = "ask_goals"
 
+    # Empty or inaudible input check
+    if not clean_transcript or clean_transcript in ["[Speech Recognition Error]", ""]:
+        unclear_msg = "Sorry, I didn't catch that. Could you repeat it?"
+        audio_url, _ = await tts_service.synthesize_to_file(unclear_msg)
+        return ESP32ChatResponse(
+            transcript=clean_transcript or "[Unclear]",
+            reply_text=unclear_msg,
+            audio_url=audio_url,
+            learning_mode=req.mode or "coach",
+            session_id=session_id or "ses_default",
+            provider_used="system",
+            is_fallback=False,
+            onboarding_active=onboarding_active,
+            onboarding_step=current_step,
+            voice_state=voice_manager.state.value,
+            detail="Empty or missing message input"
+        )
+
     # 4. Check WAKE_LISTENING / SNOOZED / STANDBY / PAUSED State Machine
     is_typed = bool(getattr(req, "is_typed_text", False))
     is_idle_state = voice_manager.state in [
@@ -1160,7 +1691,12 @@ async def process_esp32_chat(req: ESP32ChatRequest):
         VoiceState.SLEEP, VoiceState.SNOOZED, VoiceState.PAUSED, VoiceState.WAKE_ONLY
     ]
 
-    if is_idle_state:
+    manual_active = voice_manager.is_manual_activation_active()
+    if manual_active:
+        voice_manager.consume_manual_activation()
+        voice_manager.log(f'Manual voice activation chat active. Auto-waking assistant for: "{clean_transcript}"')
+        voice_manager.transition_to(VoiceState.ONBOARDING if onboarding_active else VoiceState.ACTIVE_LISTENING, "manual_chat_wake")
+    elif is_idle_state:
         is_wake, trailing_speech = is_wake_word(clean_transcript, log_debug=False)
         is_explicit_resume = clean_transcript.strip().lower() in ["resume", "continue", "start"]
         if is_wake or is_explicit_resume:
@@ -1206,7 +1742,7 @@ async def process_esp32_chat(req: ESP32ChatRequest):
                     onboarding_active=onboarding_active,
                     onboarding_step=current_step,
                     is_control_command=False,
-                    voice_state="ACTIVE",
+                    voice_state="ACTIVE_LISTENING",
                     active_section="normal_chat",
                     route="NORMAL_CHAT"
                 )
@@ -1252,6 +1788,9 @@ async def process_esp32_chat(req: ESP32ChatRequest):
         is_wake, trailing_speech = is_wake_word(clean_transcript, log_debug=False)
         if is_wake and trailing_speech:
             clean_transcript = trailing_speech
+
+    # Reset inactivity timer on meaningful learner interaction
+    voice_manager.touch_interaction()
 
     # 5. Retrieve or create active session
     active_session = resolve_prototype_session(session_id, default_mode=req.mode or "coach")
@@ -1425,6 +1964,51 @@ async def process_esp32_chat(req: ESP32ChatRequest):
 
     if onboarding_active:
         voice_manager.transition_to(VoiceState.ONBOARDING, "onboarding_active")
+
+        # Check for assessment skip / deferral commands
+        is_skip_requested = is_assessment_skip_command(clean_transcript) or cmd_intent == "SKIP_ASSESSMENT"
+        if is_skip_requested:
+            update_student(student_id, {
+                "assessment_deferred": 1,
+                "onboarding_completed": True,
+                "onboarding_step": "completed"
+            })
+            onboarding_active = False
+            reply_text = "No problem at all! We can skip the assessment for now and just talk normally. What would you like to discuss today?"
+            voice_manager.transition_to(VoiceState.READY, "assessment_skipped")
+            audio_url, _ = await tts_service.synthesize_to_file(reply_text)
+            add_conversation_message(
+                student_id=student_id,
+                session_id=curr_session_id,
+                role="user",
+                content=clean_transcript,
+                learning_mode=active_mode
+            )
+            add_conversation_message(
+                student_id=student_id,
+                session_id=curr_session_id,
+                role="assistant",
+                content=reply_text,
+                audio_path=audio_url,
+                learning_mode=active_mode,
+                onboarding_state="completed",
+                intent="skip_assessment"
+            )
+            return ESP32ChatResponse(
+                transcript=transcript,
+                reply_text=reply_text,
+                audio_url=audio_url,
+                learning_mode=active_mode,
+                session_id=curr_session_id,
+                provider_used="system",
+                is_fallback=False,
+                onboarding_active=False,
+                onboarding_step="completed",
+                topic=None,
+                detail="Assessment deferred by user request.",
+                voice_state=voice_manager.state.value
+            )
+
         is_assessment_step = current_step in [personalization_service.STATE_ASSESSMENT, "SPEECH_TEST_PROMPT", "SPEECH_EVALUATION", "speech_test_prompt", "speaking_assessment"] or cmd_intent == "SUBMIT"
 
         if is_assessment_step:
@@ -1441,7 +2025,7 @@ async def process_esp32_chat(req: ESP32ChatRequest):
 
             # Check if this single sample is very brief and cumulative words is under 40 and first sample
             if words_in_transcript < 12 and cum_words < 40 and samples_cnt <= 1:
-                retry_msg = "Please share a little more about yourself or your projects so I can calibrate our lessons accurately."
+                retry_msg = "That sample was a bit too short. Please share a little more about yourself or your projects so I can calibrate our lessons accurately."
                 audio_url, _ = await tts_service.synthesize_to_file(retry_msg)
                 voice_manager.transition_to(VoiceState.ASSESSMENT, "retry_assessment")
                 return ESP32ChatResponse(
@@ -1532,15 +2116,33 @@ async def process_esp32_chat(req: ESP32ChatRequest):
                 next_step = personalization_service.determine_next_onboarding_state(updated_student, current_step)
                 update_student(student_id, {"onboarding_step": next_step})
 
+                recent_turns = get_conversation_history(student_id=student_id, session_id=curr_session_id, limit=6)
+                assessment_status = (
+                    "deferred" if updated_student.get("assessment_deferred")
+                    else ("completed" if updated_student.get("onboarding_completed")
+                          else "active" if next_step in ["speech_test_prompt", "speaking_assessment"]
+                          else "pending")
+                )
+
                 system_prompt = personalization_service.build_onboarding_turn_prompt(
                     student=updated_student,
                     current_step=current_step,
                     next_step=next_step,
-                    user_answer=clean_transcript
+                    user_answer=clean_transcript,
+                    recent_history=recent_turns,
+                    assessment_status=assessment_status
                 )
-                messages = [{"role": "user", "content": clean_transcript}]
+                dialogue_msgs = []
+                for turn in (recent_turns or [])[-4:]:
+                    r = "assistant" if turn.get("role") == "assistant" else "user"
+                    c = (turn.get("content") or "").strip()
+                    if c:
+                        dialogue_msgs.append({"role": r, "content": c})
+                if not dialogue_msgs or dialogue_msgs[-1].get("content") != clean_transcript:
+                    dialogue_msgs.append({"role": "user", "content": clean_transcript})
+
                 try:
-                    llm_res = await llm_service.generate_response(messages=messages, system_prompt=system_prompt)
+                    llm_res = await llm_service.generate_response(messages=dialogue_msgs, system_prompt=system_prompt)
                     reply_text = llm_res.text
                     provider_used = f"{llm_res.provider} ({llm_res.model})"
                     is_fallback = llm_res.is_fallback

@@ -13,6 +13,7 @@ os.environ["DATABASE_PATH"] = str(TEST_DB_PATH)
 
 from app.config import settings
 settings.DATABASE_PATH = TEST_DB_PATH
+settings.HARDWARE_TEST_MODE = False
 
 from app.db.database import init_db, update_db_settings
 from app.services.voice_service import voice_manager, VoiceState

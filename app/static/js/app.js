@@ -58,8 +58,11 @@ let calibrationFrames = 0;
 let wakeWordRecognizer = null;
 let isWakeWordEnabled = true;
 
-// Hardware Exclusive Audio Mode: ESP32-S3 INMP441 Microphone & MAX98357A Speaker DAC
-const isLaptopAudioDisabled = true;
+// Authoritative Audio Mode Selection: 'esp32' (hardware) or 'laptop' (browser mic & speakers)
+let currentAudioMode = "esp32";
+let isLaptopAudioDisabled = true;
+let laptopMicPermissionGranted = false;
+let laptopAudioPlayer = null;
 let esp32HardwareConnected = false;
 let esp32HardwareStatusMessage = "Checking ESP32-S3 hardware connection...";
 
@@ -83,9 +86,11 @@ document.addEventListener("DOMContentLoaded", () => {
   loadAllData();
   setupEventListeners();
   setupAudioBench();
+  initAudioMode();
   initWakeWordListener();
   setupSettingsEventHandlers();
   initESP32HardwareMonitoring();
+  initConversationPolling();
 });
 
 // -------------------------------------------------------------
@@ -100,6 +105,199 @@ function initClock() {
   };
   update();
   setInterval(update, 1000);
+}
+
+// -------------------------------------------------------------
+// Audio Input/Output Mode Selector & State Management
+// -------------------------------------------------------------
+async function initAudioMode() {
+  let initialMode = "esp32";
+  try {
+    const res = await fetch("/api/v1/admin/settings/audio_mode");
+    if (res.ok) {
+      const data = await res.json();
+      if (data.audio_mode && (data.audio_mode === "esp32" || data.audio_mode === "laptop")) {
+        initialMode = data.audio_mode;
+      }
+    }
+  } catch (e) {
+    try {
+      const local = localStorage.getItem("mizo_audio_mode");
+      if (local && (local === "esp32" || local === "laptop")) {
+        initialMode = local;
+      }
+    } catch (err) {}
+  }
+
+  await selectAudioMode(initialMode, false);
+}
+
+async function selectAudioMode(mode, saveToServer = true) {
+  const cleanMode = (mode || "esp32").toLowerCase().trim() === "laptop" ? "laptop" : "esp32";
+
+  // Clean up any in-progress recording or playback
+  if (isRecording) {
+    stopVoiceRecording();
+  }
+  if (laptopAudioPlayer) {
+    try { laptopAudioPlayer.pause(); } catch (e) {}
+    laptopAudioPlayer = null;
+  }
+  if (cleanMode === "esp32") {
+    if (micMediaStream) {
+      try {
+        micMediaStream.getTracks().forEach(t => t.stop());
+      } catch (e) {}
+      micMediaStream = null;
+    }
+    if (wakeWordRecognizer) {
+      try { wakeWordRecognizer.abort(); } catch (e) {}
+      wakeWordRecognizer = null;
+    }
+    if (vadAnimationId) {
+      cancelAnimationFrame(vadAnimationId);
+      vadAnimationId = null;
+    }
+  }
+
+  currentAudioMode = cleanMode;
+  isLaptopAudioDisabled = (cleanMode === "esp32");
+
+  // Update UI selector cards
+  const cardEsp32 = document.getElementById("card-mode-esp32");
+  const cardLaptop = document.getElementById("card-mode-laptop");
+  const activeSummary = document.getElementById("audio-mode-active-summary");
+  const recordStatus = document.getElementById("record-status-text");
+
+  if (cardEsp32 && cardLaptop) {
+    if (cleanMode === "esp32") {
+      cardEsp32.classList.add("active");
+      cardLaptop.classList.remove("active");
+      if (activeSummary) {
+        activeSummary.textContent = "ESP32 Robot Active";
+        activeSummary.style.color = "#38bdf8";
+      }
+      if (recordStatus && !isProcessingBackend) {
+        recordStatus.textContent = esp32HardwareConnected 
+          ? "🟢 ESP32 Robot Active • Speak into INMP441 mic" 
+          : "🔴 ESP32 Disconnected • Connect hardware or switch to Laptop Audio";
+      }
+    } else {
+      cardLaptop.classList.add("active");
+      cardEsp32.classList.remove("active");
+      if (activeSummary) {
+        activeSummary.textContent = "Laptop Audio Active";
+        activeSummary.style.color = "#34d399";
+      }
+      if (recordStatus && !isProcessingBackend) {
+        recordStatus.textContent = "🟢 Laptop Audio Active • Ready to speak";
+      }
+    }
+  }
+
+  // Update voice control button texts and tooltips based on selected mode
+  const btnVoiceMode = document.getElementById("btn-toggle-voice-mode");
+  const voiceModeLabel = document.getElementById("voice-mode-label");
+  const btnMic = document.getElementById("btn-mic-record");
+  if (cleanMode === "laptop") {
+    clearTimeout(window._manualActivationUiTimer);
+    if (btnVoiceMode) {
+      btnVoiceMode.classList.remove("active");
+      btnVoiceMode.title = "Click to start or stop listening via laptop microphone";
+    }
+    if (voiceModeLabel) {
+      voiceModeLabel.textContent = "Start Listening (Laptop Mic)";
+    }
+    if (btnMic) {
+      btnMic.title = "Click to speak using laptop microphone";
+    }
+  } else {
+    if (btnVoiceMode) {
+      btnVoiceMode.classList.remove("active");
+      btnVoiceMode.title = "Manual activation override (hands-free wake listening is active by default)";
+    }
+    if (voiceModeLabel) {
+      voiceModeLabel.textContent = "Manual Voice Activation (Fallback)";
+    }
+    if (btnMic) {
+      btnMic.title = "Push to start hands-free voice turn (ESP32 hardware)";
+    }
+  }
+
+  updateLaptopStatusIndicator();
+
+  // Persist locally
+  try {
+    localStorage.setItem("mizo_audio_mode", cleanMode);
+  } catch (e) {}
+
+  // Persist to backend settings
+  if (saveToServer) {
+    try {
+      await fetch("/api/v1/admin/settings/audio_mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audio_mode: cleanMode })
+      });
+      showToast(cleanMode === "laptop" 
+        ? "💻 Laptop Audio Mode selected (Mic & Speakers enabled)" 
+        : "🤖 ESP32 Robot Mode selected (Hardware mic & speaker active)");
+    } catch (e) {
+      console.warn("Failed to persist audio mode to server:", e);
+    }
+  }
+
+  if (cleanMode === "laptop") {
+    initWakeWordListener();
+  }
+}
+
+function updateLaptopStatusIndicator() {
+  const statusPill = document.getElementById("laptop-mode-status");
+  const dot = document.getElementById("laptop-mode-dot");
+  const text = document.getElementById("laptop-mode-text");
+  if (!statusPill || !text) return;
+
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    if (laptopMicPermissionGranted) {
+      statusPill.className = "audio-mode-status-pill status-ready";
+      if (dot) dot.textContent = "🟢";
+      text.textContent = isRecording ? "Recording" : "Ready";
+    } else {
+      statusPill.className = "audio-mode-status-pill status-ready";
+      if (dot) dot.textContent = "🟢";
+      text.textContent = "Ready (Web Audio)";
+    }
+  } else {
+    statusPill.className = "audio-mode-status-pill status-error";
+    if (dot) dot.textContent = "🔴";
+    text.textContent = "Web Audio Unsupported";
+  }
+}
+
+async function testLaptopMicPermission() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert("Web Audio / getUserMedia is not supported in this browser environment.\nPlease use a modern browser (Chrome, Edge, Firefox).");
+    return;
+  }
+  showToast("🎙️ Checking laptop microphone permission...");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    laptopMicPermissionGranted = true;
+    updateLaptopStatusIndicator();
+    stream.getTracks().forEach(t => t.stop());
+    showToast("✓ Laptop microphone permission granted and working!");
+  } catch (err) {
+    laptopMicPermissionGranted = false;
+    updateLaptopStatusIndicator();
+    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      alert("Microphone permission denied.\n\nPlease allow microphone access in your browser settings (click the lock or camera icon in the address bar) to speak to Mizo.");
+    } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      alert("No microphone found on your laptop.\n\nPlease connect a built-in or USB microphone to use Laptop Audio Mode.");
+    } else {
+      alert("Unable to access microphone: " + (err.message || err.name));
+    }
+  }
 }
 
 // -------------------------------------------------------------
@@ -646,6 +844,12 @@ async function loadStudents() {
       if (snapGrade) snapGrade.textContent = s.grade || s.education || "Student";
 
       updateOnboardingStepper(s.onboarding_step, s.onboarding_completed);
+      isStudentOnboardingComplete = Boolean(s.onboarding_completed);
+      if (!isStudentOnboardingComplete && currentVoiceState !== VoiceState.SPEAKING && currentVoiceState !== VoiceState.PROCESSING && currentVoiceState !== VoiceState.ACTIVE_LISTENING) {
+        updateMizoFace("onboarding");
+      } else if (isStudentOnboardingComplete && currentVoiceState !== VoiceState.SPEAKING && currentVoiceState !== VoiceState.PROCESSING && currentVoiceState !== VoiceState.ACTIVE_LISTENING) {
+        updateMizoFace("idle");
+      }
 
       await loadHistoricalProgress();
 
@@ -846,9 +1050,14 @@ function updateBar(key, val, sourceText = "") {
 // -------------------------------------------------------------
 // Conversation Stream & History
 // -------------------------------------------------------------
+let _lastConversationSig = "";
+let _conversationPollingInterval = null;
+let _isPollingConversations = false;
+
 async function loadConversations(searchQuery = null) {
   try {
-    let url = `/api/v1/conversations?student_id=${currentStudentId}&limit=50`;
+    const studentIdParam = currentStudentId || 1;
+    let url = `/api/v1/conversations?student_id=${studentIdParam}&limit=50`;
     if (searchQuery && searchQuery.trim()) {
       url += `&search=${encodeURIComponent(searchQuery.trim())}`;
     }
@@ -860,10 +1069,33 @@ async function loadConversations(searchQuery = null) {
     // Canonical chronological ordering: oldest to newest
     logs.sort((a, b) => (a.id || 0) - (b.id || 0));
 
-    // 1. Render in Live Chat Box on Onboarding Studio
+    // Deduplicate array by unique message ID to prevent any duplicate rendering
+    const seenIds = new Set();
+    const uniqueLogs = [];
+    for (const msg of logs) {
+      const id = msg.id;
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        uniqueLogs.push(msg);
+      } else if (!id) {
+        uniqueLogs.push(msg);
+      }
+    }
+
+    // Deduplicate render cycles when messages have not changed
+    const latestId = uniqueLogs.length > 0 ? (uniqueLogs[uniqueLogs.length - 1].id || 0) : 0;
+    const currentSig = `${uniqueLogs.length}:${latestId}:${searchQuery || ''}`;
+    if (!searchQuery && currentSig === _lastConversationSig) {
+      return;
+    }
+    if (!searchQuery) {
+      _lastConversationSig = currentSig;
+    }
+
+    // 1. Render in Live Chat Box on Onboarding Studio (preserving scroll position if user scrolled up)
     const chatBox = document.getElementById("chat-messages-container");
     if (chatBox) {
-      if (logs.length === 0) {
+      if (uniqueLogs.length === 0) {
         chatBox.innerHTML = `
           <div class="text-muted" style="text-align:center; padding:40px;" id="chat-idle-placeholder">
             💤 Mizo is in snooze mode.<br>
@@ -871,23 +1103,67 @@ async function loadConversations(searchQuery = null) {
           </div>
         `;
       } else {
-        chatBox.innerHTML = logs.map(msg => renderChatMessage(msg)).join("");
-        chatBox.scrollTop = chatBox.scrollHeight;
+        const wasNearBottom = (chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight) <= 80;
+        chatBox.innerHTML = uniqueLogs.map(msg => renderChatMessage(msg)).join("");
+        if (wasNearBottom) {
+          chatBox.scrollTop = chatBox.scrollHeight;
+        }
       }
     }
 
-    // 2. Render in Full Conversation History Tab
+    // 2. Render in Full Conversation History Tab (preserving scroll position if user scrolled up)
     const historyBox = document.getElementById("history-stream-box");
     if (historyBox) {
-      if (logs.length === 0) {
+      if (uniqueLogs.length === 0) {
         historyBox.innerHTML = `<div class="text-muted" style="text-align:center; padding:30px;">No conversation messages found.</div>`;
       } else {
-        historyBox.innerHTML = logs.map(msg => renderHistoryItem(msg)).join("");
+        const wasHistoryNearBottom = (historyBox.scrollHeight - historyBox.scrollTop - historyBox.clientHeight) <= 80;
+        historyBox.innerHTML = uniqueLogs.map(msg => renderHistoryItem(msg)).join("");
+        if (wasHistoryNearBottom) {
+          historyBox.scrollTop = historyBox.scrollHeight;
+        }
       }
     }
   } catch (err) {
     console.error("Error loading conversations:", err);
   }
+}
+
+function initConversationPolling(intervalMs = 2500) {
+  if (_conversationPollingInterval) {
+    clearInterval(_conversationPollingInterval);
+    _conversationPollingInterval = null;
+  }
+
+  const poll = async () => {
+    // Stop unnecessary polling when window/tab is inactive or hidden
+    if (document.hidden) return;
+
+    // Prevent overlapping asynchronous requests
+    if (_isPollingConversations) return;
+
+    // Do not interrupt if user is actively searching conversation history
+    const inputSearch = document.getElementById("input-history-search");
+    if (inputSearch && inputSearch.value.trim().length > 0) return;
+
+    try {
+      _isPollingConversations = true;
+      await loadConversations();
+    } catch (err) {
+      console.warn("[Polling] Error refreshing conversations:", err);
+    } finally {
+      _isPollingConversations = false;
+    }
+  };
+
+  _conversationPollingInterval = setInterval(poll, intervalMs);
+
+  // Resume immediate refresh as soon as tab becomes visible again
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      poll();
+    }
+  });
 }
 
 function renderChatMessage(msg) {
@@ -954,8 +1230,29 @@ function renderHistoryItem(msg) {
 }
 
 function playAudio(url) {
-  const audio = new Audio(url);
-  audio.play().catch(e => console.warn("Audio playback error:", e));
+  if (currentAudioMode === "laptop") {
+    if (!url) return;
+    try {
+      if (laptopAudioPlayer) {
+        try { laptopAudioPlayer.pause(); } catch (e) {}
+      }
+      laptopAudioPlayer = new Audio(url);
+      updateMizoFace("speaking", "Mizo speaking...", "Playing recorded speech response");
+      laptopAudioPlayer.onended = () => {
+        updateMizoFace(!isStudentOnboardingComplete ? "onboarding" : "idle");
+        laptopAudioPlayer = null;
+      };
+      laptopAudioPlayer.onerror = () => {
+        updateMizoFace(!isStudentOnboardingComplete ? "onboarding" : "idle");
+        laptopAudioPlayer = null;
+      };
+      laptopAudioPlayer.play().catch(e => console.warn("playAudio failed:", e));
+    } catch (e) {
+      console.warn("playAudio error:", e);
+    }
+  } else {
+    showToast("🔊 In ESP32 Robot Mode, audio playback is delivered to the ESP32 MAX98357A hardware speaker.");
+  }
 }
 
 async function loadKnowledgeDocs() {
@@ -1035,6 +1332,56 @@ async function removeDevice(id) {
 // -------------------------------------------------------------
 // Voice State Machine & Two-Way Continuous Engine
 // -------------------------------------------------------------
+let isStudentOnboardingComplete = false;
+
+function updateMizoFace(state, labelOverride = null, hintOverride = null) {
+  const validStates = ["idle", "listening", "thinking", "speaking", "onboarding", "error"];
+  const targetState = validStates.includes(state) ? state : "idle";
+
+  if (window.mizoFace && typeof window.mizoFace.update === "function") {
+    window.mizoFace.update(targetState, labelOverride, hintOverride, true);
+    return;
+  }
+
+  const panel = document.getElementById("mizo-face-panel");
+  const labelEl = document.getElementById("mizo-face-status-label");
+  const hintEl = document.getElementById("mizo-face-status-hint");
+  if (!panel) return;
+
+  panel.setAttribute("data-state", targetState);
+
+  const defaultMeta = {
+    idle: {
+      label: 'Ready — Say "Hey Mizo" or tap to speak',
+      hint: "Standing by • Say 'Hey Mizo' or tap to speak"
+    },
+    listening: {
+      label: "Listening...",
+      hint: "Microphone active • Capturing speech"
+    },
+    thinking: {
+      label: "Thinking... Let me figure that out",
+      hint: "Processing speech & formulating response..."
+    },
+    speaking: {
+      label: "Mizo is speaking...",
+      hint: "Delivering spoken response via speaker"
+    },
+    onboarding: {
+      label: "Welcome! Let's get to know you",
+      hint: "Conducting personalized student interview"
+    },
+    error: {
+      label: "Something went wrong. Please try again.",
+      hint: "Voice request failed • Please try again or tap to speak"
+    }
+  };
+
+  const meta = defaultMeta[targetState] || defaultMeta.idle;
+  if (labelEl) labelEl.textContent = labelOverride || meta.label;
+  if (hintEl) hintEl.textContent = hintOverride || meta.hint;
+}
+
 function setSilenceBadge(statusText, type = "normal") {
   const badge = document.getElementById("silence-status-badge");
   if (!badge) return;
@@ -1054,6 +1401,25 @@ function setVoiceState(newState, reason = "") {
     console.log("[VOICE] State: ACTIVE_CONVERSATION");
     console.log("[VOICE] State: LISTENING");
     console.log("[VOICE] Microphone: ACTIVE");
+  }
+
+  // Synchronize Mizo Animated Face Panel
+  if (newState === VoiceState.SPEAKING) {
+    updateMizoFace("speaking");
+  } else if (newState === VoiceState.PROCESSING || newState === VoiceState.PROCESSING_ASSESSMENT) {
+    updateMizoFace("thinking");
+  } else if (newState === VoiceState.ACTIVE_LISTENING || newState === VoiceState.CAPTURING || newState === VoiceState.WAKE_DETECTED || newState === VoiceState.ASSESSMENT_RECORDING) {
+    updateMizoFace("listening");
+  } else if (newState === VoiceState.ERROR_RECOVERY) {
+    updateMizoFace("error", "Error", "Voice pipeline recovering");
+  } else {
+    if (isMizoSpeaking && currentAudioMode === "laptop") {
+      updateMizoFace("speaking");
+    } else if (!isStudentOnboardingComplete) {
+      updateMizoFace("onboarding");
+    } else {
+      updateMizoFace("idle");
+    }
   }
 
   const stateBadge = document.getElementById("voice-state-badge");
@@ -1087,7 +1453,12 @@ function setVoiceState(newState, reason = "") {
   }
 
   // State-specific lifecycle management
-  if (newState === VoiceState.STANDBY || newState === VoiceState.WAKE_ONLY || newState === VoiceState.SNOOZED || newState === VoiceState.STOPPING) {
+  if (newState === VoiceState.STANDBY || newState === VoiceState.WAKE_ONLY || newState === VoiceState.SNOOZED || newState === VoiceState.STOPPING || newState === VoiceState.WAKE_LISTENING) {
+    const btnVoiceMode = document.getElementById("btn-toggle-voice-mode");
+    const voiceModeLabel = document.getElementById("voice-mode-label");
+    if (btnVoiceMode) btnVoiceMode.classList.remove("active");
+    if (voiceModeLabel) voiceModeLabel.textContent = "Manual Voice Activation (Fallback)";
+    clearTimeout(window._manualActivationUiTimer);
     clearTimeout(inactivityTimerId);
     silenceStartTimestamp = null;
     speechDetected = false;
@@ -1329,7 +1700,24 @@ function executeMizoStop() {
   console.log("[Voice SM] 'Mizo stop' control command received.");
   setVoiceState(VoiceState.STOPPING, "mizo_stop_command");
 
+  const btnVoiceMode = document.getElementById("btn-toggle-voice-mode");
+  const voiceModeLabel = document.getElementById("voice-mode-label");
+  if (btnVoiceMode) btnVoiceMode.classList.remove("active");
+  if (voiceModeLabel) {
+    voiceModeLabel.textContent = (currentAudioMode === "laptop")
+      ? "Start Listening (Laptop Mic)"
+      : "Manual Voice Activation (Fallback)";
+  }
+  clearTimeout(window._manualActivationUiTimer);
+
   // 1. Immediately halt audio playback
+  if (laptopAudioPlayer) {
+    try {
+      laptopAudioPlayer.pause();
+      laptopAudioPlayer.currentTime = 0;
+    } catch (e) {}
+    laptopAudioPlayer = null;
+  }
   const player = document.getElementById("sim-audio-player");
   if (player) {
     player.pause();
@@ -1587,13 +1975,13 @@ function initAudioContextVAD(stream) {
 }
 
 async function startVoiceRecording(isAuto = false) {
-  // Requirement 1 & 8: Stop using laptop's microphone. Audio input is exclusively on ESP32-S3 INMP441.
-  if (isLaptopAudioDisabled) {
+  // If in ESP32 Hardware Mode, browser recording is disabled; hardware INMP441 is used instead
+  if (currentAudioMode === "esp32" || isLaptopAudioDisabled) {
     if (!isAuto) {
       if (esp32HardwareConnected) {
         showToast("🎙️ Hardware Mode: Speak into the external INMP441 microphone connected to your ESP32-S3.");
       } else {
-        showToast("⚠️ ESP32-S3 hardware is disconnected or unavailable. Laptop microphone fallback is disabled. Use text chat below.", true);
+        showToast("⚠️ ESP32-S3 hardware is disconnected or unavailable. Switch to Laptop Audio Mode above to use your laptop microphone.", true);
       }
     }
     return;
@@ -1614,6 +2002,9 @@ async function startVoiceRecording(isAuto = false) {
         autoGainControl: true
       }
     });
+
+    laptopMicPermissionGranted = true;
+    updateLaptopStatusIndicator();
 
     let mimeType = "audio/webm;codecs=opus";
     if (!MediaRecorder.isTypeSupported(mimeType)) {
@@ -1643,7 +2034,7 @@ async function startVoiceRecording(isAuto = false) {
       lastRecordedBlob = audioBlob;
 
       // Retain micMediaStream active so AudioContext VAD remains continuously available for barge-in
-      // Tracks are only terminated if user explicitly mutes the microphone.
+      // Tracks are only terminated if user explicitly mutes the microphone or switches modes.
 
       // If user said "Mizo stop", do not send
       if (currentVoiceState === VoiceState.WAKE_ONLY) return;
@@ -1661,6 +2052,13 @@ async function startVoiceRecording(isAuto = false) {
 
     mediaRecorder.start();
     isRecording = true;
+
+    if (currentAudioMode === "laptop") {
+      const btnVoiceMode = document.getElementById("btn-toggle-voice-mode");
+      const voiceModeLabel = document.getElementById("voice-mode-label");
+      if (btnVoiceMode) btnVoiceMode.classList.add("active");
+      if (voiceModeLabel) voiceModeLabel.textContent = "Listening... (Click to Stop)";
+    }
 
     if (currentVoiceState !== VoiceState.ASSESSMENT_RECORDING) {
       setVoiceState(VoiceState.ACTIVE_LISTENING, "recording_started");
@@ -1686,7 +2084,17 @@ async function startVoiceRecording(isAuto = false) {
 
   } catch (err) {
     console.error("Microphone access error:", err);
-    alert("Microphone permission denied or device unavailable.\n\nYou can still type your answers in the chat input!");
+    laptopMicPermissionGranted = false;
+    updateLaptopStatusIndicator();
+    let msg = "Microphone access error: " + (err.message || err.name);
+    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      msg = "Microphone permission denied. Please allow microphone access in your browser settings to speak to Mizo.";
+    } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      msg = "No microphone found on your computer. Please connect a microphone to use Laptop Audio Mode.";
+    } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+      msg = "Microphone is busy or being used by another application.";
+    }
+    showToast(`⚠️ ${msg}`, true);
     if (recordStatus) recordStatus.textContent = "Microphone unavailable. Use chat input.";
     setVoiceState(VoiceState.WAKE_ONLY, "mic_denied");
   }
@@ -1711,6 +2119,13 @@ function stopVoiceRecording() {
   if (recordBtnText) recordBtnText.textContent = "Voice";
   if (recordStatus) recordStatus.textContent = "⚡ Mizo processing your voice...";
   if (timerEl) timerEl.classList.remove("recording");
+
+  if (currentAudioMode === "laptop") {
+    const btnVoiceMode = document.getElementById("btn-toggle-voice-mode");
+    const voiceModeLabel = document.getElementById("voice-mode-label");
+    if (btnVoiceMode) btnVoiceMode.classList.remove("active");
+    if (voiceModeLabel) voiceModeLabel.textContent = "Start Listening (Laptop Mic)";
+  }
 }
 
 function showAssessmentHUD(topic = "") {
@@ -1773,15 +2188,83 @@ function finishSpeakingAssessment(isAuto = false) {
   stopVoiceRecording();
 }
 
+async function toggleManualVoiceActivation() {
+  // In Laptop Audio Mode, manual voice toggle operates the laptop microphone directly
+  if (currentAudioMode === "laptop") {
+    if (isRecording) {
+      stopVoiceRecording();
+    } else {
+      startVoiceRecording(false);
+    }
+    return;
+  }
+
+  const btn = document.getElementById("btn-toggle-voice-mode");
+  const label = document.getElementById("voice-mode-label");
+  const isCurrentlyActive = btn && btn.classList.contains("active");
+
+  try {
+    const res = await fetch("/api/v1/esp32/manual_activate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Device-Key": "mizo_esp32_secret_key_123"
+      },
+      body: JSON.stringify({
+        action: isCurrentlyActive ? "deactivate" : "activate",
+        timeout_seconds: 30.0
+      })
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || `Server returned HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    if (data.active) {
+      if (btn) btn.classList.add("active");
+      if (label) label.textContent = "Manual Voice Active (Listening...)";
+      setVoiceState(VoiceState.ACTIVE_LISTENING, "manual_activation");
+      showToast("🎙️ Manual Voice Active! Speak into the INMP441 microphone (wake word not required).");
+
+      clearTimeout(window._manualActivationUiTimer);
+      window._manualActivationUiTimer = setTimeout(() => {
+        if (btn && btn.classList.contains("active")) {
+          btn.classList.remove("active");
+          if (label) label.textContent = "Manual Voice Activation (Fallback)";
+          if (currentVoiceState === VoiceState.ACTIVE_LISTENING) {
+            setVoiceState(VoiceState.WAKE_LISTENING, "manual_activation_timeout");
+          }
+          showToast("Standby wake listening restored (Say 'Hey Mizo')");
+        }
+      }, (data.timeout_seconds || 30.0) * 1000);
+    } else {
+      if (btn) btn.classList.remove("active");
+      if (label) label.textContent = "Manual Voice Activation (Fallback)";
+      setVoiceState(VoiceState.WAKE_LISTENING, "manual_deactivated");
+      clearTimeout(window._manualActivationUiTimer);
+      showToast("Manual Voice Activation cancelled. Standby listening for 'Hey Mizo'.");
+    }
+  } catch (err) {
+    console.error("Manual voice activation failed:", err);
+    showToast(`❌ Manual activation failed: ${err.message}`, true);
+  }
+}
+
 function setupAudioBench() {
-  // 1. Toggle Live Continuous Voice Mode Button
+  // 1. Toggle Live Continuous Voice Mode Button (Laptop mic in Laptop mode / ESP32 Manual Fallback in Robot mode)
   const btnVoiceMode = document.getElementById("btn-toggle-voice-mode");
   if (btnVoiceMode) {
     btnVoiceMode.addEventListener("click", () => {
-      if (esp32HardwareConnected) {
-        showToast("🎙️ Hardware Mode: Continuous voice is active on your ESP32-S3. Speak into the INMP441 microphone.");
+      if (currentAudioMode === "laptop") {
+        if (isRecording) {
+          stopVoiceRecording();
+        } else {
+          startVoiceRecording(false);
+        }
       } else {
-        showToast("⚠️ ESP32-S3 hardware is disconnected or unavailable. Laptop audio fallback is disabled. Use text chat below.", true);
+        toggleManualVoiceActivation();
       }
     });
   }
@@ -1790,10 +2273,37 @@ function setupAudioBench() {
   const btnMic = document.getElementById("btn-mic-record");
   if (btnMic) {
     btnMic.addEventListener("click", () => {
-      if (esp32HardwareConnected) {
-        showToast("🎙️ Hardware Mode: User speech is captured via the ESP32-S3 INMP441 microphone.");
+      if (currentAudioMode === "laptop") {
+        if (isRecording) {
+          stopVoiceRecording();
+        } else {
+          startVoiceRecording(false);
+        }
       } else {
-        showToast("⚠️ ESP32-S3 hardware is disconnected or unavailable. Laptop audio fallback is disabled. Use text chat below.", true);
+        if (esp32HardwareConnected) {
+          showToast("🎙️ Hardware Mode: User speech is captured via the ESP32-S3 INMP441 microphone.");
+        } else {
+          showToast("⚠️ ESP32-S3 hardware is disconnected or unavailable. Switch to Laptop Audio Mode above to use your laptop microphone.", true);
+        }
+      }
+    });
+  }
+
+  // 2b. Tap Mizo Virtual Face to Speak
+  const facePanel = document.getElementById("mizo-face-panel");
+  if (facePanel) {
+    facePanel.addEventListener("click", (e) => {
+      if (e.target.closest("#mizo-face-preview-controls") || e.target.closest(".btn-face-preview")) {
+        return;
+      }
+      if (currentAudioMode === "laptop") {
+        if (isRecording) {
+          stopVoiceRecording();
+        } else {
+          startVoiceRecording(false);
+        }
+      } else {
+        toggleManualVoiceActivation();
       }
     });
   }
@@ -1981,10 +2491,15 @@ async function sendAudioToBackend(audioBlob, isAssessment = false) {
   if (isAssess) formData.append("is_assessment", "true");
 
   setVoiceState(VoiceState.PROCESSING, "sending_audio");
+  isProcessingBackend = true;
+  updateMizoFace("thinking", "Thinking... Let me figure that out", "Processing speech & formulating response...");
 
   try {
     if (recordStatus) recordStatus.textContent = "⚡ Transcribing speech with Whisper STT...";
-    const res = await fetch("/api/v1/esp32/audio?format=json", {
+    const audioEndpoint = (currentAudioMode === "laptop")
+      ? "/api/v1/audio/laptop?format=json"
+      : "/api/v1/esp32/audio?format=json";
+    const res = await fetch(audioEndpoint, {
       method: "POST",
       body: formData,
       signal: currentAbortController.signal
@@ -2019,14 +2534,20 @@ async function sendAudioToBackend(audioBlob, isAssessment = false) {
     if (recordStatus) recordStatus.textContent = "Error processing audio";
     setSilenceBadge("Error • Ready", "normal");
     console.error(err);
+    updateMizoFace("error", "Something went wrong. Please try again.", "Error processing audio");
 
     if (currentVoiceState !== VoiceState.WAKE_ONLY && currentVoiceState !== VoiceState.STANDBY && currentVoiceState !== VoiceState.SNOOZED) {
       setTimeout(() => {
         setVoiceState(VoiceState.READY, "error_resume");
+        if (!isStudentOnboardingComplete) {
+          updateMizoFace("onboarding");
+        } else {
+          updateMizoFace("idle");
+        }
         if (!isRecording && !isMicMuted) {
           startVoiceRecording(true);
         }
-      }, 1000);
+      }, 3500);
     }
   }
 }
@@ -2047,6 +2568,7 @@ async function sendTextMessage(overrideText = null) {
   currentAbortController = new AbortController();
   isProcessingBackend = true;
   setVoiceState(VoiceState.PROCESSING, "sending_text");
+  updateMizoFace("thinking", "Thinking... Let me figure that out", "Formulating response...");
 
   try {
     const res = await fetch("/api/v1/esp32/chat", {
@@ -2079,15 +2601,21 @@ async function sendTextMessage(overrideText = null) {
     }
     currentAbortController = null;
     console.error("Chat error:", err);
+    updateMizoFace("error", "Something went wrong. Please try again.", "Error formulating response");
     if (currentVoiceState !== VoiceState.WAKE_ONLY && currentVoiceState !== VoiceState.STANDBY && currentVoiceState !== VoiceState.SNOOZED) {
-      setVoiceState(VoiceState.READY, "chat_error_fallback");
+      setTimeout(() => {
+        setVoiceState(VoiceState.READY, "chat_error_fallback");
+        if (!isStudentOnboardingComplete) {
+          updateMizoFace("onboarding");
+        } else {
+          updateMizoFace("idle");
+        }
+      }, 3500);
     }
   }
 }
 
 async function handleInteractionResponse(data) {
-  // Requirement 2 & 9: Voice responses play through ESP32-S3 MAX98357A speaker only.
-  // Laptop speaker playback and microphone auto-starts are completely disabled.
   const player = document.getElementById("sim-audio-player");
   const waveform = document.getElementById("sim-waveform");
   if (player) {
@@ -2099,22 +2627,130 @@ async function handleInteractionResponse(data) {
   isMikazaSpeaking = false;
 
   if (data.audio_url) {
-    setSilenceBadge("🔊 Spoken reply delivered to ESP32-S3 Speaker", "normal");
-    if (waveform) {
-      waveform.classList.add("playing");
+    if (currentAudioMode === "laptop") {
+      setSilenceBadge("🔊 Playing through laptop speakers", "normal");
+      isMizoSpeaking = true;
+      updateMizoFace("speaking", "Mizo is speaking...", "Delivering spoken response via laptop speakers");
+      if (waveform) waveform.classList.add("playing");
+
+      console.log("[Laptop Audio] Received audio response. audio_url:", data.audio_url, "reply_length:", (data.reply_text || "").length);
+
+      try {
+        if (laptopAudioPlayer) {
+          try { laptopAudioPlayer.pause(); } catch (e) {}
+        }
+        laptopAudioPlayer = new Audio(data.audio_url);
+        laptopAudioPlayer.onloadedmetadata = () => {
+          console.log("[Laptop Audio] Audio metadata loaded. Duration:", laptopAudioPlayer.duration, "s, src:", laptopAudioPlayer.currentSrc);
+        };
+        laptopAudioPlayer.onplay = () => {
+          console.log("[Laptop Audio] Audio playback started successfully.");
+        };
+        laptopAudioPlayer.onended = () => {
+          console.log("[Laptop Audio] Audio playback completed normally.");
+          isMizoSpeaking = false;
+          if (waveform) waveform.classList.remove("playing");
+          if (!isStudentOnboardingComplete) {
+            updateMizoFace("onboarding");
+          } else {
+            updateMizoFace("idle");
+          }
+          laptopAudioPlayer = null;
+          if (currentVoiceState !== VoiceState.ASSESSMENT_RECORDING) {
+            setSilenceBadge("Ready • Laptop Audio Active", "idle");
+            setVoiceState(VoiceState.READY, "speech_playback_ended");
+          }
+        };
+        laptopAudioPlayer.onerror = (e) => {
+          console.error("[Laptop Audio] Playback error on audio element:", e, "src:", laptopAudioPlayer?.currentSrc, "error code:", laptopAudioPlayer?.error?.code);
+          isMizoSpeaking = false;
+          if (waveform) waveform.classList.remove("playing");
+          updateMizoFace(!isStudentOnboardingComplete ? "onboarding" : "idle");
+
+          // Fallback to client-side SpeechSynthesis if audio element fails to load/decode
+          if (window.speechSynthesis && data.reply_text) {
+            try {
+              console.log("[Laptop Audio] Falling back to browser SpeechSynthesis...");
+              window.speechSynthesis.cancel();
+              const utter = new SpeechSynthesisUtterance(data.reply_text);
+              utter.onend = () => {
+                isMizoSpeaking = false;
+                if (waveform) waveform.classList.remove("playing");
+                updateMizoFace(!isStudentOnboardingComplete ? "onboarding" : "idle");
+              };
+              utter.onerror = (err) => console.warn("[Laptop Audio] SpeechSynthesis error:", err);
+              window.speechSynthesis.speak(utter);
+            } catch (synthErr) {
+              console.warn("[Laptop Audio] SpeechSynthesis invocation error:", synthErr);
+            }
+          }
+          laptopAudioPlayer = null;
+        };
+        await laptopAudioPlayer.play();
+      } catch (err) {
+        console.warn("[Laptop Audio] play() failed (autoplay policy or device issue):", err);
+        if (window.speechSynthesis && data.reply_text) {
+          try {
+            console.log("[Laptop Audio] Falling back to browser SpeechSynthesis due to play() exception...");
+            window.speechSynthesis.cancel();
+            const utter = new SpeechSynthesisUtterance(data.reply_text);
+            utter.onend = () => {
+              isMizoSpeaking = false;
+              if (waveform) waveform.classList.remove("playing");
+              updateMizoFace(!isStudentOnboardingComplete ? "onboarding" : "idle");
+            };
+            window.speechSynthesis.speak(utter);
+          } catch (synthErr) {
+            console.warn("[Laptop Audio] SpeechSynthesis fallback error:", synthErr);
+          }
+        } else {
+          const replyWordCount = (data.reply_text || "").split(/\s+/).filter(Boolean).length;
+          const speakDurationMs = Math.max(3000, Math.min(15000, replyWordCount * 360 || 3500));
+          setTimeout(() => {
+            isMizoSpeaking = false;
+            if (waveform) waveform.classList.remove("playing");
+            if (!isStudentOnboardingComplete) {
+              updateMizoFace("onboarding");
+            } else {
+              updateMizoFace("idle");
+            }
+          }, speakDurationMs);
+        }
+      }
+    } else {
+      setSilenceBadge("🔊 Spoken reply delivered to ESP32-S3 Speaker", "normal");
+      isMizoSpeaking = true;
+      updateMizoFace("speaking", "Mizo is speaking...", "Delivering spoken response via speaker");
+      if (waveform) {
+        waveform.classList.add("playing");
+      }
+      const replyWordCount = (data.reply_text || "").split(/\s+/).filter(Boolean).length;
+      const speakDurationMs = Math.max(3000, Math.min(15000, replyWordCount * 360 || 3500));
       setTimeout(() => {
+        isMizoSpeaking = false;
         if (waveform) waveform.classList.remove("playing");
-      }, 3500);
+        if (!isStudentOnboardingComplete) {
+          updateMizoFace("onboarding");
+        } else {
+          updateMizoFace("idle");
+        }
+      }, speakDurationMs);
     }
   }
 
   if (data.onboarding_step === "speech_test_prompt" || data.onboarding_step === "speaking_assessment") {
     setVoiceState(VoiceState.ASSESSMENT_RECORDING, "assessment_prompt_ready");
     showAssessmentHUD(data.topic || "1-Minute Speaking Sample");
-    showToast("🎙️ Speaking Assessment: Speak for ~1 minute into the ESP32-S3 INMP441 microphone.");
+    if (currentAudioMode === "laptop") {
+      showToast("🎙️ Speaking Assessment: Speak for ~1 minute into your laptop microphone.");
+    } else {
+      showToast("🎙️ Speaking Assessment: Speak for ~1 minute into the ESP32-S3 INMP441 microphone.");
+    }
   } else {
-    setVoiceState(VoiceState.READY, "speech_response_delivered");
-    setSilenceBadge("Ready • ESP32-S3 Hardware Active", "idle");
+    if (!isMizoSpeaking) {
+      setVoiceState(VoiceState.READY, "speech_response_delivered");
+      setSilenceBadge(currentAudioMode === "laptop" ? "Ready • Laptop Audio Active" : "Ready • ESP32-S3 Hardware Active", "idle");
+    }
   }
 
   // 2. Update Session Metrics & Cumulative Progress
@@ -2266,6 +2902,8 @@ function setupEventListeners() {
         });
         if (res.ok) {
           showToast("Onboarding restarted from Step 1!");
+          isStudentOnboardingComplete = false;
+          updateMizoFace("onboarding", "Onboarding", "Conducting interview step 1...");
           await loadAllData();
 
           // Switch to Onboarding & Voice Chat Tab
@@ -2307,6 +2945,8 @@ function setupEventListeners() {
         });
         if (res.ok) {
           showToast("Text profile completed! Speaking assessment marked pending.");
+          isStudentOnboardingComplete = true;
+          updateMizoFace("idle", "Ready", "Onboarding complete • Ready");
           await loadAllData();
         } else {
           showToast("Error completing text profile", true);
@@ -3401,6 +4041,20 @@ function initESP32HardwareMonitoring() {
   }
 }
 
+async function testSpeakerAudio() {
+  showToast("🔊 Requesting 440Hz test tone for ESP32 MAX98357A speaker...");
+  try {
+    const res = await fetch("/api/v1/esp32/speaker_test");
+    if (res.ok) {
+      showToast("✓ Speaker test tone ready on server (16kHz WAV for MAX98357A)");
+    } else {
+      showToast("Speaker test request failed", true);
+    }
+  } catch (e) {
+    showToast("Error requesting speaker test", true);
+  }
+}
+
 async function checkESP32HardwareStatus() {
   const dotEl = document.getElementById("esp32-hw-dot");
   const titleEl = document.getElementById("esp32-hw-status-title");
@@ -3415,38 +4069,78 @@ async function checkESP32HardwareStatus() {
     esp32HardwareConnected = Boolean(data.connected);
     esp32HardwareStatusMessage = data.status_message || "";
 
+    const esp32StatusPill = document.getElementById("esp32-mode-status");
     if (esp32HardwareConnected) {
       if (dotEl) dotEl.textContent = "🟢";
       if (titleEl) titleEl.textContent = "ESP32-S3 Audio Hardware: Connected (Active)";
-      if (descEl) descEl.textContent = "Exclusive Mode: INMP441 Microphone (I2S) • MAX98357A Speaker (I2S) • Laptop audio disabled";
+      if (descEl) descEl.textContent = "INMP441 Microphone (I2S) • MAX98357A Speaker (I2S) • Hardware Connected";
       if (badgeEl) {
         badgeEl.textContent = "Connected";
         badgeEl.style.background = "#10b981";
       }
-      if (recordStatus && !isProcessingBackend) {
+      if (esp32StatusPill) {
+        esp32StatusPill.className = "audio-mode-status-pill status-connected";
+      }
+      if (recordStatus && !isProcessingBackend && currentAudioMode === "esp32") {
         recordStatus.textContent = "🟢 ESP32-S3 Audio Active • Speak into INMP441 mic";
       }
     } else {
       if (dotEl) dotEl.textContent = "🔴";
       if (titleEl) titleEl.textContent = "ESP32-S3 Audio Hardware: Disconnected / Unavailable";
-      if (descEl) descEl.textContent = "⚠️ Audio is exclusive to ESP32-S3. Laptop audio fallback is disabled. Use text chat below.";
+      if (descEl) descEl.textContent = "INMP441 Microphone (I2S) • MAX98357A Speaker (I2S) • Hardware Disconnected";
       if (badgeEl) {
         badgeEl.textContent = "Disconnected";
         badgeEl.style.background = "#f43f5e";
       }
-      if (recordStatus && !isProcessingBackend) {
-        recordStatus.textContent = "🔴 ESP32-S3 Disconnected • Laptop audio fallback disabled. Use text input.";
+      if (esp32StatusPill) {
+        esp32StatusPill.className = "audio-mode-status-pill status-disconnected";
+      }
+      if (recordStatus && !isProcessingBackend && currentAudioMode === "esp32") {
+        recordStatus.textContent = "🔴 ESP32-S3 Disconnected • Connect hardware or switch to Laptop Audio";
       }
     }
   } catch (err) {
     esp32HardwareConnected = false;
+    const esp32StatusPill = document.getElementById("esp32-mode-status");
     if (dotEl) dotEl.textContent = "🔴";
     if (titleEl) titleEl.textContent = "ESP32-S3 Audio Hardware: Offline";
-    if (descEl) descEl.textContent = "⚠️ Unable to query hardware status. Laptop audio fallback disabled.";
+    if (descEl) descEl.textContent = "INMP441 Microphone (I2S) • MAX98357A Speaker (I2S) • Hardware Offline";
     if (badgeEl) {
       badgeEl.textContent = "Offline";
       badgeEl.style.background = "#f43f5e";
     }
+    if (esp32StatusPill) {
+      esp32StatusPill.className = "audio-mode-status-pill status-disconnected";
+    }
+  }
+
+  // Synchronize Face State with backend voice_state
+  try {
+    const vRes = await fetch("/api/v1/esp32/voice_state");
+    if (vRes.ok) {
+      const vData = await vRes.json();
+      if (typeof vData.onboarding_active === "boolean") {
+        isStudentOnboardingComplete = !vData.onboarding_active;
+      }
+      if (!isProcessingBackend && !isRecording && !isMizoSpeaking && currentVoiceState !== VoiceState.CAPTURING && currentVoiceState !== VoiceState.PROCESSING && currentVoiceState !== VoiceState.SPEAKING) {
+        const bState = vData.voice_state;
+        if (bState === "SPEAKING") {
+          updateMizoFace("speaking");
+        } else if (bState === "PROCESSING" || bState === "PROCESSING_ASSESSMENT") {
+          updateMizoFace("thinking");
+        } else if (bState === "ACTIVE_LISTENING" || bState === "CAPTURING" || bState === "WAKE_DETECTED") {
+          updateMizoFace("listening");
+        } else if (bState === "ERROR_RECOVERY") {
+          updateMizoFace("error");
+        } else if (vData.onboarding_active) {
+          updateMizoFace("onboarding");
+        } else {
+          updateMizoFace("idle");
+        }
+      }
+    }
+  } catch (e) {
+    // Silent catch for background state sync
   }
 }
 
