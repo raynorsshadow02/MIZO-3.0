@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, Query, Body
+from fastapi import APIRouter, HTTPException, Query, Body, UploadFile, File
 
 from app.db.database import (
     create_subject,
@@ -102,4 +102,62 @@ def reset_study_session_endpoint(student_id: int = Query(default=PROTOTYPE_STUDE
     """Resets the study session state so old tutor context is cleared."""
     tutor_service.reset_study_session(student_id=student_id)
     return {"success": True, "message": "Study session reset successfully"}
+
+
+@router.post("/{subject_id}/upload-material")
+async def upload_subject_material(
+    subject_id: int,
+    file: UploadFile = File(...),
+    student_id: int = Query(default=PROTOTYPE_STUDENT_ID)
+):
+    """Uploads and indexes study material directly for this subject."""
+    import uuid
+    from app.config import settings
+    from app.services.study_document_service import study_doc_service
+
+    filename = file.filename or "notes.pdf"
+    content_bytes = await file.read()
+    file_size = len(content_bytes)
+
+    is_valid, err_msg = study_doc_service.validate_file(filename, file_size)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=err_msg)
+
+    safe_name = f"{uuid.uuid4().hex[:6]}_{filename}"
+    saved_path = settings.UPLOAD_DIR / safe_name
+    with open(saved_path, "wb") as f:
+        f.write(content_bytes)
+
+    try:
+        res = study_doc_service.index_and_load_study_material(
+            file_path=saved_path,
+            original_filename=filename,
+            student_id=student_id,
+            target_subject_id=subject_id
+        )
+        return res
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
+
+
+@router.get("/{subject_id}/documents")
+def get_subject_documents(subject_id: int):
+    """Lists all uploaded documents for a subject."""
+    from app.services.study_document_service import study_doc_service
+    docs = study_doc_service.list_study_documents(subject_id=subject_id)
+    return {"subject_id": subject_id, "documents": docs}
+
+
+@router.post("/{subject_id}/topics/{topic_id}/complete")
+def mark_topic_complete_endpoint(
+    subject_id: int,
+    topic_id: int,
+    student_id: int = Query(default=PROTOTYPE_STUDENT_ID)
+):
+    """Explicitly marks a topic complete and updates mastery."""
+    from app.db.database import mark_topic_completed
+    prog = mark_topic_completed(student_id=student_id, subject_id=subject_id, topic_name_or_id=topic_id)
+    return {"success": True, "progress": prog}
 

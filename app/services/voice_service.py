@@ -580,11 +580,9 @@ def detect_mizo_intent(text: str, log_debug: bool = True) -> str:
 
     # Condition D: Addressing phrases ending with Mizo (e.g. "Wake up, Mizo", "Are you there, Mizo", "Can you hear me, Mizo", "What's up, Mizo")
     elif is_mizo_word(words[-1])[0]:
-        addressing_starters = [
-            "wake up", "are you there", "can you hear me", "whats up", "what is up", "what s up",
-            "hello", "hey", "hi", "talk to me", "listen to me"
-        ]
-        if any(starter in norm for starter in addressing_starters):
+        if words[-1] in ["miso", "meso", "meeso"] and len(words) >= 2 and words[-2] in MISMATCH_FOLLOWING_WORDS:
+            is_wake = False
+        else:
             is_wake = True
             best_similarity = max(best_similarity, is_mizo_word(words[-1])[1])
 
@@ -592,6 +590,20 @@ def detect_mizo_intent(text: str, log_debug: bool = True) -> str:
     elif "wake up" in norm and any(is_mizo_word(w)[0] for w in words):
         is_wake = True
         best_similarity = max(best_similarity, 0.95)
+
+    # Condition F: Clear sentence containing Mizo as a spoken word
+    elif any(is_mizo_word(w)[0] for w in words):
+        found_wake_word = False
+        for i, w in enumerate(words):
+            match, score = is_mizo_word(w)
+            if match:
+                if i + 1 < len(words) and words[i + 1] in MISMATCH_FOLLOWING_WORDS:
+                    continue
+                found_wake_word = True
+                best_similarity = max(best_similarity, score)
+                break
+        if found_wake_word:
+            is_wake = True
 
     # Format debug output logs with clear rejection reasons
     intent = "WAKE" if is_wake else "NORMAL"
@@ -636,6 +648,9 @@ def is_wake_word(text: str, custom_variants: Optional[List[str]] = None, log_deb
             trailing = " ".join(words[2:]).strip()
         elif len(words) >= 3 and words[1] in ["there", "um", "ah", "please", "buddy", "robot"] and is_mizo_word(words[2])[0]:
             trailing = " ".join(words[3:]).strip()
+        elif any(is_mizo_word(w)[0] for w in words[2:]):
+            idx = next(i for i, w in enumerate(words) if is_mizo_word(w)[0])
+            trailing = " ".join(words[idx+1:]).strip() or " ".join(w for i, w in enumerate(words) if i != idx and w not in WAKE_GREETING_WORDS).strip()
     elif len(words) >= 1 and is_mizo_word(words[0])[0]:
         trailing = " ".join(words[1:]).strip()
     elif norm.startswith("wake up") and any(is_mizo_word(w)[0] for w in words):
@@ -646,10 +661,21 @@ def is_wake_word(text: str, custom_variants: Optional[List[str]] = None, log_deb
                 break
         trailing = " ".join(words[idx+1:]).strip()
     elif len(words) >= 1 and is_mizo_word(words[-1])[0]:
-        trailing = ""
+        prefix = " ".join(words[:-1]).strip()
+        if prefix in ["good morning", "good afternoon", "good evening", "hello", "hi", "hey", "wake up"]:
+            trailing = ""
+        else:
+            trailing = prefix
+    elif any(is_mizo_word(w)[0] for w in words):
+        idx = next(i for i, w in enumerate(words) if is_mizo_word(w)[0])
+        after_mizo = " ".join(words[idx+1:]).strip()
+        if after_mizo:
+            trailing = after_mizo
+        else:
+            trailing = " ".join(w for i, w in enumerate(words) if i != idx).strip()
 
     # Filter out pure wake-addressing queries from trailing speech (e.g. "are you there", "wake up")
-    if trailing in ["are you there", "wake up", "can you hear me", "whats up", "what is up", "please wake up", "there", ""]:
+    if trailing in ["are you there", "wake up", "can you hear me", "whats up", "what is up", "please wake up", "there", "good morning", "good afternoon", "good evening", ""]:
         trailing = ""
 
     return True, trailing

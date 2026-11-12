@@ -384,6 +384,25 @@ def init_db():
     _ensure_column(cursor, "learning_sessions", "current_subject", "TEXT", "''")
     _ensure_column(cursor, "learning_sessions", "current_unit", "TEXT", "''")
 
+    _ensure_column(cursor, "syllabus_topics", "subtopics", "TEXT", "'[]'")
+    _ensure_column(cursor, "syllabus_topics", "source_document_id", "INTEGER", "NULL")
+    _ensure_column(cursor, "syllabus_topics", "source_page", "INTEGER", "NULL")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS study_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            subject_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            title TEXT NOT NULL,
+            page_count INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+            FOREIGN KEY (subject_id) REFERENCES subjects (id) ON DELETE CASCADE
+        )
+    """)
+
     # 10. Speech & Seminar Practice Sessions
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS speech_practice_sessions (
@@ -407,7 +426,22 @@ def init_db():
         )
     """)
 
+    # 11. Persistent Conversational Memories (Separate from transcript)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            session_id TEXT,
+            memory_text TEXT NOT NULL,
+            category TEXT DEFAULT 'general',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_student_id ON memories (student_id)")
+
     conn.commit()
+
 
     # Seed default system settings if empty
     cursor.execute("SELECT COUNT(*) FROM system_settings")
@@ -535,6 +569,61 @@ def init_db():
             INSERT INTO device_keys (device_name, api_key, is_active)
             VALUES (?, ?, 1)
         """, ("ESP32-S3 Classroom Robot", settings.DEFAULT_DEVICE_KEY))
+        conn.commit()
+
+    # Seed default Robotics syllabus if empty
+    cursor.execute("SELECT COUNT(*) FROM subjects")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("""
+            INSERT INTO subjects (name, description)
+            VALUES (?, ?)
+        """, ("Robotics", "Robotics Engineering & Kinematics"))
+        sub_id = cursor.lastrowid
+        cursor.execute("""
+            INSERT INTO syllabus_units (subject_id, unit_number, title, description)
+            VALUES (?, ?, ?, ?)
+        """, (sub_id, 1, "Manipulator Kinematics", "Spatial descriptions, transformations, and arm geometry."))
+        unit_id = cursor.lastrowid
+        cursor.execute("""
+            INSERT INTO syllabus_topics (
+                unit_id, topic_name, summary, content, simple_explanation,
+                examples, key_terms, sample_questions, order_index
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            unit_id,
+            "Forward Kinematics",
+            "Joint angles to end-effector position.",
+            "Forward kinematics computes the end-effector position and orientation from joint angles. For example, knowing the angles of shoulder and elbow joints allows us to compute where the robotic hand is in 3D space.",
+            "If you know how much your elbow and shoulder bend, forward kinematics tells you where your hand ends up.",
+            json.dumps(["If we know the angles of a robot arm's joints, we can calculate where its hand will be in space."]),
+            json.dumps([{"term": "Forward Kinematics", "meaning": "Calculating the hand position from joint angles."}]),
+            json.dumps([{
+                "question": "What does forward kinematics calculate for a robot arm?",
+                "expected_keywords": ["position", "hand", "angles", "joints", "where"],
+                "answer": "Forward kinematics calculates the position of the robot hand using its joint angles."
+            }]),
+            0
+        ))
+        cursor.execute("""
+            INSERT INTO syllabus_topics (
+                unit_id, topic_name, summary, content, simple_explanation,
+                examples, key_terms, sample_questions, order_index
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            unit_id,
+            "Inverse Kinematics",
+            "Target position to joint angles.",
+            "Inverse kinematics calculates the required joint angles to reach a desired target pose.",
+            "Inverse kinematics tells you how to bend your elbow and shoulder to place your hand exactly on an object.",
+            json.dumps(["Calculating joint angles to grasp a cup on a table."]),
+            json.dumps([{"term": "Inverse Kinematics", "meaning": "Finding angles from desired position."}]),
+            json.dumps([{
+                "question": "What does inverse kinematics find?",
+                "expected_keywords": ["angles", "joints", "target", "position"],
+                "answer": "It calculates joint angles from a desired target position."
+            }]),
+            1
+        ))
         conn.commit()
 
     # Sanitize any legacy corrupted student names (e.g. 'Going To', 'Stop') in existing database
@@ -1124,12 +1213,14 @@ def delete_learner_data(student_id: int) -> Dict[str, Any]:
     """
     conn = get_connection()
     cursor = conn.cursor()
+    cursor.execute("DELETE FROM memories WHERE student_id = ?", (student_id,))
     cursor.execute("DELETE FROM student_mistakes WHERE student_id = ?", (student_id,))
     cursor.execute("DELETE FROM conversations WHERE student_id = ?", (student_id,))
     cursor.execute("DELETE FROM assessments WHERE student_id = ?", (student_id,))
     cursor.execute("DELETE FROM learning_sessions WHERE student_id = ?", (student_id,))
     cursor.execute("DELETE FROM profile_archives WHERE student_id = ?", (student_id,))
     cursor.execute("DELETE FROM students WHERE id = ?", (student_id,))
+
 
     # Re-insert clean default student
     cursor.execute("""
@@ -1340,7 +1431,7 @@ def reset_current_session(student_id: int, session_id: Optional[str] = None) -> 
 # -------------------------------------------------------------------
 # Database Operations: Sessions Lifecycle
 # -------------------------------------------------------------------
-def create_session(student_id: int = PROTOTYPE_STUDENT_ID, mode: str = "coach") -> Dict[str, Any]:
+def create_session(student_id: int = PROTOTYPE_STUDENT_ID, mode: str = "coach", session_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Creates a brand new learning session.
     Current session metrics are initialized to ZERO without deleting historical data.
@@ -1351,32 +1442,26 @@ def create_session(student_id: int = PROTOTYPE_STUDENT_ID, mode: str = "coach") 
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Mark existing active sessions for this student as completed
-    cursor.execute("""
-        UPDATE learning_sessions
-        SET status = 'completed', updated_at = CURRENT_TIMESTAMP
-        WHERE student_id = ? AND status = 'active'
-    """, (target_student_id,))
-
     # Increment student total_sessions count
     cursor.execute("UPDATE students SET total_sessions = total_sessions + 1 WHERE id = ?", (target_student_id,))
 
-    session_id = f"ses_{uuid.uuid4().hex[:12]}"
+    sess_id = session_id or f"ses_{uuid.uuid4().hex[:12]}"
     cursor.execute("""
         INSERT INTO learning_sessions (
             session_id, student_id, mode, status,
             session_grammar, session_fluency, session_vocabulary, session_pacing, session_confidence, message_count
         ) VALUES (?, ?, ?, 'active', 0.0, 0.0, 0.0, 0.0, 0.0, 0)
-    """, (session_id, target_student_id, mode))
+        ON CONFLICT(session_id) DO UPDATE SET mode = excluded.mode, status = 'active'
+    """, (sess_id, target_student_id, mode))
     conn.commit()
     conn.close()
-    return get_session_by_id(session_id)  # type: ignore
+    return get_session_by_id(sess_id)  # type: ignore
 
 
-def get_active_session(student_id: int, default_mode: str = "coach") -> Dict[str, Any]:
-    """Retrieves active session or creates a new one if none exists."""
-    student_id = PROTOTYPE_STUDENT_ID
-    if not get_prototype_student():
+def get_active_session(student_id: Optional[int] = None, default_mode: str = "coach") -> Dict[str, Any]:
+    """Retrieves active session for student or creates a new one if none exists."""
+    target_id = student_id if student_id is not None else PROTOTYPE_STUDENT_ID
+    if not get_student(target_id):
         return {}
     conn = get_connection()
     cursor = conn.cursor()
@@ -1384,12 +1469,200 @@ def get_active_session(student_id: int, default_mode: str = "coach") -> Dict[str
         SELECT * FROM learning_sessions
         WHERE student_id = ? AND status = 'active'
         ORDER BY created_at DESC LIMIT 1
-    """, (student_id,))
+    """, (target_id,))
     row = cursor.fetchone()
     conn.close()
     if row:
         return _format_session_dict(dict(row))
-    return create_session(student_id=student_id, mode=default_mode)
+    return create_session(student_id=target_id, mode=default_mode)
+
+
+def delete_chat(session_id: str, student_id: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Deletes only the specified chat (conversation session) and its dependent chat-specific data:
+    - Messages in conversations table for this session
+    - Student mistakes linked to this session
+    - The learning_sessions entry for this session
+    Preserves:
+    - Learner profile (students table)
+    - Onboarding state and baseline scores
+    - Speaking assessments (assessments table)
+    - Saved memories (memories table)
+    Ensures that if the deleted session was the active session, a fresh session is activated.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Find the session to verify ownership
+    cursor.execute("SELECT * FROM learning_sessions WHERE session_id = ?", (session_id,))
+    session_row = cursor.fetchone()
+    if not session_row:
+        conn.close()
+        return {"success": False, "message": "Session not found", "deleted_session_id": session_id}
+
+    session_dict = dict(session_row)
+    target_student_id = session_dict["student_id"]
+    if student_id is not None and int(target_student_id) != int(student_id):
+        conn.close()
+        return {"success": False, "message": "Session does not belong to specified student", "deleted_session_id": session_id, "deleted_messages": 0}
+
+    was_active = session_dict["status"] == "active"
+    mode_val = session_dict.get("mode") or "coach"
+
+    # Count deleted messages
+    cursor.execute("SELECT COUNT(*) FROM conversations WHERE session_id = ?", (session_id,))
+    msg_count_row = cursor.fetchone()
+    deleted_msg_count = msg_count_row[0] if msg_count_row else 0
+
+    # Delete conversation messages for this chat
+    cursor.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
+    # Delete session mistakes
+    cursor.execute("DELETE FROM student_mistakes WHERE session_id = ?", (session_id,))
+    # Delete the learning session
+    cursor.execute("DELETE FROM learning_sessions WHERE session_id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+    try:
+        from app.services.tutor_service import SubjectTutorService
+        SubjectTutorService.reset_study_session(session_id=session_id)
+    except Exception:
+        pass
+
+    new_active_session = None
+    if was_active:
+        new_active_session = create_session(student_id=target_student_id, mode=mode_val)
+
+    return {
+        "success": True,
+        "deleted_session_id": session_id,
+        "deleted_messages": deleted_msg_count,
+        "active_session": new_active_session,
+        "message": f"Chat {session_id} successfully deleted."
+    }
+
+
+def save_durable_memory(
+    student_id: int,
+    memory_text: str,
+    category: str = "general",
+    session_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Saves a persistent conversational memory for a student with deduplication.
+    Also synchronizes with students.durable_memories JSON array for backwards compatibility.
+    """
+    if not memory_text or not memory_text.strip():
+        raise ValueError("Memory text cannot be empty")
+
+    clean_text = memory_text.strip()
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Deduplication check: case-insensitive match for the same student
+    cursor.execute("""
+        SELECT id, memory_text, category, created_at
+        FROM memories
+        WHERE student_id = ? AND LOWER(memory_text) = LOWER(?)
+    """, (student_id, clean_text))
+    existing = cursor.fetchone()
+
+    if existing:
+        mem_id = existing["id"]
+        cursor.execute("""
+            UPDATE memories
+            SET category = ?, session_id = COALESCE(?, session_id)
+            WHERE id = ?
+        """, (category, session_id, mem_id))
+        conn.commit()
+    else:
+        cursor.execute("""
+            INSERT INTO memories (student_id, session_id, memory_text, category)
+            VALUES (?, ?, ?, ?)
+        """, (student_id, session_id, clean_text, category))
+        mem_id = cursor.lastrowid
+        conn.commit()
+
+    # Synchronize with students.durable_memories
+    cursor.execute("SELECT memory_text FROM memories WHERE student_id = ? ORDER BY id ASC", (student_id,))
+    all_mems = [r[0] for r in cursor.fetchall()]
+    cursor.execute("UPDATE students SET durable_memories = ? WHERE id = ?", (json.dumps(all_mems), student_id))
+    conn.commit()
+
+    cursor.execute("SELECT id, student_id, session_id, memory_text, category, created_at FROM memories WHERE id = ?", (mem_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    return dict(row) if row else {
+        "id": mem_id,
+        "student_id": student_id,
+        "session_id": session_id,
+        "memory_text": clean_text,
+        "category": category,
+        "created_at": datetime.utcnow().isoformat()
+    }
+
+
+def get_student_memories(student_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+    """Retrieves saved persistent memories for a specific student."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, student_id, session_id, memory_text, category, created_at
+        FROM memories
+        WHERE student_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+    """, (student_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_durable_memory(
+    first_arg: int,
+    second_arg: Optional[int] = None,
+    memory_id: Optional[int] = None,
+    student_id: Optional[int] = None
+) -> bool:
+    """
+    Deletes a specific persistent memory safely and synchronizes students.durable_memories.
+    Supports delete_durable_memory(memory_id, student_id=student_id) and delete_durable_memory(student_id, memory_id).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    actual_mem_id = memory_id
+    actual_student_id = student_id
+
+    if actual_mem_id is None:
+        if second_arg is not None:
+            actual_student_id = first_arg
+            actual_mem_id = second_arg
+        else:
+            actual_mem_id = first_arg
+
+    if actual_student_id is not None:
+        cursor.execute("DELETE FROM memories WHERE id = ? AND student_id = ?", (actual_mem_id, actual_student_id))
+    else:
+        cursor.execute("SELECT student_id FROM memories WHERE id = ?", (actual_mem_id,))
+        r = cursor.fetchone()
+        if r:
+            actual_student_id = r[0]
+            cursor.execute("DELETE FROM memories WHERE id = ?", (actual_mem_id,))
+        else:
+            conn.close()
+            return False
+
+    deleted = cursor.rowcount > 0
+    if deleted and actual_student_id:
+        cursor.execute("SELECT memory_text FROM memories WHERE student_id = ? ORDER BY id ASC", (actual_student_id,))
+        all_mems = [r[0] for r in cursor.fetchall()]
+        cursor.execute("UPDATE students SET durable_memories = ? WHERE id = ?", (json.dumps(all_mems), actual_student_id))
+        conn.commit()
+    conn.close()
+    return deleted
+
 
 
 def get_session_by_id(session_id: str) -> Optional[Dict[str, Any]]:
@@ -1544,6 +1817,19 @@ def update_session_context(session_id: str, updates: Dict[str, Any]) -> Dict[str
         conn.commit()
     conn.close()
     return get_session_by_id(session_id) or {}
+
+
+def reset_session_context(session_id: str) -> Dict[str, Any]:
+    """Resets conversational topic and intent context for a session."""
+    return update_session_context(session_id, {
+        "current_topic": "",
+        "current_subtopic": "",
+        "current_entities": [],
+        "last_user_intent": "",
+        "last_mizo_question": "",
+        "last_user_correction": "",
+        "conversation_goal": "",
+    })
 
 
 def update_session_metrics(
@@ -1993,16 +2279,18 @@ def add_syllabus_topic(
     examples: Optional[List[str]] = None,
     key_terms: Optional[List[Dict[str, str]]] = None,
     sample_questions: Optional[List[Dict[str, Any]]] = None,
-    order_index: int = 0
+    order_index: int = 0,
+    subtopics: Optional[List[str]] = None,
+    source_document_id: Optional[int] = None
 ) -> int:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO syllabus_topics (
             unit_id, topic_name, summary, content, simple_explanation,
-            examples, key_terms, sample_questions, order_index
+            examples, key_terms, sample_questions, order_index, subtopics, source_document_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         unit_id,
         topic_name.strip(),
@@ -2012,7 +2300,9 @@ def add_syllabus_topic(
         json.dumps(examples or []),
         json.dumps(key_terms or []),
         json.dumps(sample_questions or []),
-        order_index
+        order_index,
+        json.dumps(subtopics or []),
+        source_document_id
     ))
     topic_id = cursor.lastrowid
     conn.commit()
@@ -2022,12 +2312,16 @@ def add_syllabus_topic(
 
 def _parse_topic_row(row: sqlite3.Row) -> Dict[str, Any]:
     d = dict(row)
-    for field in ["examples", "key_terms", "sample_questions"]:
+    for field in ["examples", "key_terms", "sample_questions", "subtopics"]:
         if field in d and isinstance(d[field], str):
             try:
                 d[field] = json.loads(d[field])
             except Exception:
                 d[field] = []
+        elif field not in d:
+            d[field] = []
+    # Guarantee both title and topic_name exist for frontend compatibility
+    d["title"] = d.get("topic_name", "")
     return d
 
 
@@ -2113,7 +2407,29 @@ def get_or_create_student_subject_progress(student_id: int, subject_id: int) -> 
                 d[f] = json.loads(d[f])
             except Exception:
                 d[f] = []
+        elif f not in d or d[f] is None:
+            d[f] = []
+
+    # Calculate real mastery score dynamically from actual completed topics
+    all_topics = get_all_topics_for_subject(subject_id)
+    total_topics = len(all_topics)
+    completed_topics = d.get("completed_topics") or []
+    d["mastery_score"] = int((len(completed_topics) / total_topics) * 100) if total_topics > 0 else 0
+    d["total_topics"] = total_topics
+    d["completed_count"] = len(completed_topics)
     return d
+
+
+def mark_topic_completed(student_id: int, subject_id: int, topic_name_or_id: Any) -> Dict[str, Any]:
+    """Explicitly marks a topic complete and updates subject mastery."""
+    topic_name = str(topic_name_or_id)
+    if isinstance(topic_name_or_id, int) or (isinstance(topic_name_or_id, str) and topic_name_or_id.isdigit()):
+        top = get_topic_by_id(int(topic_name_or_id))
+        if top:
+            topic_name = top["topic_name"]
+
+    record_topic_completed(student_id, subject_id, topic_name)
+    return get_or_create_student_subject_progress(student_id, subject_id)
 
 
 def update_student_subject_progress(student_id: int, subject_id: int, updates: Dict[str, Any]) -> Dict[str, Any]:

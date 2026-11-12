@@ -454,7 +454,7 @@ class MizoMemoryManager:
         weaknesses_str = ", ".join(student.get("weaknesses", [])) or "Grammar foundations"
 
         # Conversation Context & Selective Memory Retrieval (Sections 21, 22, 27)
-        from app.db.database import get_session_context
+        from app.db.database import get_session_context, get_student_memories
         from app.services.context_service import filter_relevant_memories
 
         session_ctx = get_session_context(session_id)
@@ -464,10 +464,44 @@ class MizoMemoryManager:
         last_intent = session_ctx.get("last_user_intent", "")
         last_correction = session_ctx.get("last_user_correction", "")
 
-        filtered_memory = filter_relevant_memories(student, current_topic=current_topic, current_subtopic=current_subtopic)
+        filtered_memory = filter_relevant_memories(
+            student,
+            current_topic=current_topic,
+            current_subtopic=current_subtopic,
+            user_message=current_message
+        )
         rel_interests = ", ".join(filtered_memory.get("relevant_interests", [])) or (student.get("interests") if not current_topic else "Current discussion topic")
         fav_items = filtered_memory.get("relevant_favorites", {})
         fav_items_str = ", ".join([f"{k.replace('_', ' ').capitalize()}: {v}" for k, v in fav_items.items()]) if fav_items else "None recorded"
+
+        # Selective retrieval of persistent durable memories
+        durable_mems = get_student_memories(student_id)
+        # Also incorporate any legacy student durable_memories JSON field
+        legacy_mems = student.get("durable_memories") or []
+        if isinstance(legacy_mems, list):
+            for lm in legacy_mems:
+                if isinstance(lm, str) and not any(dm.get("memory_text") == lm for dm in durable_mems):
+                    durable_mems.append({"memory_text": lm, "category": "general"})
+
+        relevant_memories = []
+        msg_lower = (current_message or "").lower()
+        is_project_query = any(k in msg_lower for k in ["project", "projects", "portfolio"])
+        is_general_memory_query = any(k in msg_lower for k in ["remember", "know about me", "opinion", "preference", "my course"])
+
+        for mem in durable_mems:
+            mtext = mem.get("memory_text", "")
+            mcat = (mem.get("category") or "general").lower()
+            if is_project_query:
+                if mcat == "project" or "project" in mtext.lower():
+                    relevant_memories.append(f"[{mcat}] {mtext}")
+            elif is_general_memory_query:
+                relevant_memories.append(f"[{mcat}] {mtext}")
+            else:
+                words = [w for w in re.findall(r"\w+", mtext.lower()) if len(w) > 4]
+                if any(w in msg_lower for w in words):
+                    relevant_memories.append(f"[{mcat}] {mtext}")
+
+        memories_str = "; ".join(relevant_memories) if relevant_memories else "None relevant to current request"
 
         # Assemble full System Prompt
         system_prompt = f"""{base_prompt}
@@ -484,12 +518,15 @@ CURRENT CONVERSATION CONTEXT (TOPIC PRIORITY OVER PROFILE):
 - Recent Entities: {", ".join(current_entities) if current_entities else "None"}
 - Last User Intent: {last_intent or "None"}
 - Last User Correction: {last_correction or "None"}
+- Relevant Saved Memories: {memories_str}
 
 CRITICAL TOPIC & RESPONSE RULES:
-1. CURRENT CONVERSATION TOPIC MUST TAKE PRIORITY: Always prioritize the active conversation topic ({current_subtopic or current_topic or "current topic"}) over unrelated profile interests. Do NOT suddenly introduce robotics, ESP32, or engineering unless the user explicitly asks about them!
-2. DIRECT FACTUAL ANSWERS: When the user asks a simple question (e.g. 'Who are the main crew members?'), answer the question directly and factually. Do NOT say 'Let's practice English by talking about...' unless the user specifically requested an English lesson.
-3. USER CORRECTION HANDLING: If the user corrects you (e.g. 'You forgot Jinbe', 'That's wrong'), reconsider the previous answer using current context and available knowledge. Acknowledge and integrate the correction if accurate.
-4. ZERO FABRICATED CONTEXT: Never say 'I remember that...' unless the relevant information is explicitly in the verified context or student record below.
+1. CURRENT CONVERSATION TOPIC MUST TAKE PRIORITY: Address the user's latest explicit request immediately. The user's current intent always takes precedence over previous topics or saved profile interests. If the user asks about kinematics, engineering, robotics, personal projects, or any new subject, answer that new topic directly without forcing references or analogies to previous topics ({current_subtopic or current_topic or "general conversation"}). Never let saved interests (such as One Piece) override a direct request.
+2. PROJECT ACCURACY & NO GUESSING: If the user asks about their projects, list ONLY projects explicitly present in 'Relevant Saved Memories' or explicit profile records. If no projects are saved, state that no project records are available. Never invent hardware, frameworks, features, or project statuses.
+3. DIRECT FACTUAL ANSWERS: When the user asks a simple question (e.g. 'Tell me about kinematics', 'Who are the main crew members?'), answer the question directly and factually without unsolicited analogies. Do NOT say 'Let's practice English by talking about...' unless the user specifically requested an English lesson.
+4. USER CORRECTION HANDLING: If the user corrects you (e.g. 'You forgot Jinbe', 'That's wrong'), reconsider the previous answer using current context and available knowledge. Acknowledge and integrate the correction if accurate.
+5. ZERO FABRICATED CONTEXT: Never say 'I remember that...' unless the relevant information is explicitly in the verified context, durable memories, or student record below.
+6. TEACH ME CONTINUITY: If the user says 'Teach me', continue the immediately preceding relevant teaching topic unless the user explicitly requested a different topic.
 
 ==================================================
 LONG-TERM STUDENT PROFILE (RELEVANT DURABLE RECORD):
@@ -503,6 +540,7 @@ LONG-TERM STUDENT PROFILE (RELEVANT DURABLE RECORD):
 - Identified Strengths: {strengths_str}
 - Topic-Relevant Interests: {rel_interests}
 - Topic-Relevant Favorites: {fav_items_str}
+- Relevant Saved Memories: {memories_str}
 - Baseline Scores: Grammar: {student.get('baseline_grammar')}% | Fluency: {student.get('baseline_fluency')}% | Vocab: {student.get('baseline_vocabulary')}% | Confidence: {student.get('baseline_confidence')}%
 - Current Performance: Grammar: {student.get('grammar_score')}% | Fluency: {student.get('fluency_score')}% | Vocab: {student.get('vocabulary_score')}% | Confidence: {student.get('confidence_score')}%
 
@@ -511,7 +549,7 @@ LONG-TERM STUDENT PROFILE (RELEVANT DURABLE RECORD):
 {mistakes_block}
 
 COACHING RULES:
-- If the student asks about their name, weaknesses, goals, or previous discussions, answer accurately using their profile above.
+- If the student asks about their name, weaknesses, goals, projects, or previous discussions, answer accurately using their profile and saved memories above.
 - Strictness: {student.get('correction_strictness', 'gentle')}.
 - Output spoken text directly: 2 to 4 concise spoken sentences for clear audio playback on the robotic tutor speaker.
 - Do not use markdown headers, asterisks, or bullet points in the spoken text.
@@ -562,6 +600,69 @@ COACHING RULES:
             "history_truncated": bool(session_summary)
         }
 
+    @classmethod
+    def generate_candidate_memory(
+        cls,
+        student_id: int,
+        session_id: Optional[str] = None,
+        message_text: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Extracts a concise, structured candidate memory from user utterance or recent dialogue.
+        Filters out greetings, transient filler, and courtesies.
+        """
+        text = (message_text or "").strip()
+        if not text:
+            dialogue = cls.get_session_dialogue(student_id=student_id, session_id=session_id, limit=8)
+            user_msgs = [
+                m["content"].strip() for m in dialogue
+                if m.get("role") == "user" and len(m.get("content", "").strip()) > 3
+            ]
+            filtered_msgs = [
+                um for um in user_msgs
+                if um.lower().strip("!?. ") not in {"hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye", "ok", "okay", "yes", "no"}
+            ]
+            text = filtered_msgs[-1] if filtered_msgs else (user_msgs[-1] if user_msgs else "")
+
+        if not text:
+            return {
+                "candidate_memory": "General conversation topic and learning interest.",
+                "category": "general"
+            }
+
+        t_lower = text.lower()
+        if any(w in t_lower for w in ["kinematic", "physics", "displacement", "velocity", "acceleration"]):
+            return {
+                "candidate_memory": "Studying kinematics, equations of motion, and physical mechanics.",
+                "category": "academic"
+            }
+        elif any(w in t_lower for w in ["project", "robot", "robotics", "esp32", "arduino", "hardware", "rover", "iot"]):
+            clean_proj = text.replace("I am working on", "").replace("My project is", "").strip()
+            return {
+                "candidate_memory": f"Working on engineering project: {clean_proj if len(clean_proj) < 80 else text[:80]}",
+                "category": "project"
+            }
+        elif any(w in t_lower for w in ["one piece", "luffy", "zoro", "anime", "manga"]):
+            clean_anime = text if len(text) <= 90 else "Follows One Piece anime/manga."
+            return {
+                "candidate_memory": f"Expressed interest in One Piece: {clean_anime}",
+                "category": "interest"
+            }
+        elif any(w in t_lower for w in ["prefer", "simple", "easier", "style", "slowly", "explanation"]):
+            return {
+                "candidate_memory": f"Explanation preference: {text[:100]}",
+                "category": "preference"
+            }
+        else:
+            trimmed = text[:100].strip()
+            if not trimmed.endswith("."):
+                trimmed += "."
+            return {
+                "candidate_memory": f"User noted: {trimmed}",
+                "category": "general"
+            }
+
 
 # Singleton instance
 memory_manager = MizoMemoryManager()
+

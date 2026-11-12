@@ -86,7 +86,48 @@ class LLMResult:
     fallback_chain: List[str] = field(default_factory=list)
 
 
+def clean_llm_response(text: str) -> str:
+    """
+    Strips internal model reasoning artifacts without removing legitimate educational explanations.
+    Removes:
+    - <think>...</think> and <thought>...</thought> blocks (including unclosed tags if streaming truncated)
+    - Prefixes like "Here's a thinking process that leads to the suggested response:\n\n"
+    - "Thinking Process:\n\n"
+    - Internal prompt template artifacts
+    """
+    if not text:
+        return ""
+
+    cleaned = text
+
+    # 1. Remove <think>...</think> blocks
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<think>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+
+    # 2. Remove <thought>...</thought> blocks
+    cleaned = re.sub(r"<thought>.*?</thought>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<thought>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+
+    # 3. Remove leading reasoning intros like "Here's a thinking process...:"
+    cleaned = re.sub(
+        r"^(?:Here'?s a thinking process[^\n]*:?|Thinking Process:?|Internal Reasoning:?)[^\n]*\n+",
+        "",
+        cleaned.strip(),
+        flags=re.IGNORECASE
+    )
+
+    # 4. Remove standalone thinking sections if prefixed with e.g. "Here's a thinking process..."
+    reasoning_prefix_match = re.match(r"^(?:Here'?s a thinking process.*?)(?:\n\n|\r\n\r\n)(.*)$", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    if reasoning_prefix_match:
+        candidate = reasoning_prefix_match.group(1).strip()
+        if candidate:
+            cleaned = candidate
+
+    return cleaned.strip()
+
+
 class LLMService:
+
     """
     Production-grade LLM Router:
     1. Primary: Llama 3.3 70B Versatile (via Groq API / configured Llama provider).
@@ -292,7 +333,154 @@ class LLMService:
                 "complexity": "deterministic"
             }
 
+        # 8. Courtesies (Thanks, Thank you)
+        courtesy_queries = ["thank you", "thanks", "thanks a lot", "thank you so much", "thx"]
+        if norm in courtesy_queries or any(norm.startswith(q + " ") for q in courtesy_queries):
+            return {
+                "handled": True,
+                "reply_text": "You're very welcome! Let me know whenever you'd like to practice or learn something new.",
+                "action": "courtesy",
+                "provider": "system",
+                "intent": "courtesy",
+                "complexity": "deterministic"
+            }
+
+        # 9. Ambiguous "move on"
+        move_on_phrases = ["move on", "i want to move on", "let s move on", "lets move on", "can we move on", "proceed", "move ahead"]
+        if norm in move_on_phrases:
+            if session_id:
+                try:
+                    from app.db.database import update_session_context
+                    update_session_context(session_id, {"current_topic": "", "current_subtopic": "", "current_entities": []})
+                except Exception:
+                    pass
+            return {
+                "handled": True,
+                "reply_text": "Sure! What would you like to move on to next? We can explore a new topic, practice English, or dive into your study material.",
+                "action": "move_on_clarification",
+                "provider": "system",
+                "intent": "move_on_clarification",
+                "complexity": "deterministic"
+            }
+
+        # 10. User Projects Query
+        project_queries = [
+            "what are my projects", "whats my project", "what is my project",
+            "tell me about my projects", "tell me about my project", "what project am i working on",
+            "what projects am i working on", "my projects", "my project",
+            "list my projects", "show my projects", "do i have any projects"
+        ]
+        is_project_query = (
+            norm in project_queries or
+            any(norm.startswith(q) for q in project_queries) or
+            ("project" in norm and any(k in norm for k in ["what are my", "tell me about my", "list my", "show my", "what am i working on"]))
+        )
+        if is_project_query:
+            # Query explicitly stored project records for this student
+            st_id = (student_data.get("id") or student_data.get("student_id") or PROTOTYPE_STUDENT_ID) if student_data else PROTOTYPE_STUDENT_ID
+            project_records = []
+            try:
+                from app.db.database import get_student_memories
+                all_mems = get_student_memories(st_id)
+                for m in all_mems:
+                    cat = (m.get("category") or "").lower()
+                    txt = (m.get("memory_text") or "").strip()
+                    if cat == "project" or txt.lower().startswith("project:") or txt.lower().startswith("project -"):
+                        project_records.append(txt)
+            except Exception:
+                pass
+
+            # Also check durable_memories in student_data only for explicit project items
+            if not project_records and student_data:
+                for d in (student_data.get("durable_memories") or []):
+                    d_str = str(d).strip()
+                    if d_str.lower().startswith("project:") or d_str.lower().startswith("project -"):
+                        project_records.append(d_str)
+
+            # Check if user asked detailed questions about status or missing details
+            wants_status_and_missing = any(k in norm for k in ["status", "missing", "do not guess", "dont guess", "details"])
+
+            if not project_records:
+                reply = (
+                    "The available records do not contain enough information about your projects. "
+                    "No specific project records, status updates, or technical specifications have been saved to your profile yet. "
+                    "I will not guess or assume any details."
+                )
+            else:
+                formatted_projects = []
+                for p in project_records:
+                    clean_p = re.sub(r"^(?:project:?\s*|-?\s*)", "", p, flags=re.IGNORECASE).strip()
+                    formatted_projects.append(f"• {clean_p}")
+                proj_list_str = "\n".join(formatted_projects)
+
+                if wants_status_and_missing:
+                    reply = (
+                        f"Based strictly on your saved records, here is the only project information available:\n\n"
+                        f"{proj_list_str}\n\n"
+                        f"• Status: Not specified in your saved records.\n"
+                        f"• Missing Details: Current development phase, milestones, hardware specifications, and deadlines are not recorded. Per your instruction, I have not guessed or assumed any details."
+                    )
+                else:
+                    reply = f"According to your saved records, you have the following project recorded:\n\n{proj_list_str}"
+
+            return {
+                "handled": True,
+                "reply_text": reply,
+                "action": "project_retrieval",
+                "provider": "system",
+                "intent": "project_retrieval",
+                "complexity": "deterministic"
+            }
+
+        # 11. Kinematics Direct Query
+        kinematics_queries = [
+            "what is kinematics", "whats kinematics", "tell me about kinematics",
+            "explain kinematics", "what is forward kinematics", "what is inverse kinematics"
+        ]
+        if norm in kinematics_queries:
+            reply = (
+                "Kinematics is the branch of mechanics and robotics that describes the motion of objects, joints, "
+                "and robotic arms without considering the forces that cause them. It calculates position, velocity, "
+                "and acceleration to accurately position a robot's end-effector in space."
+            )
+            return {
+                "handled": True,
+                "reply_text": reply,
+                "action": "kinematics_direct",
+                "provider": "system",
+                "intent": "kinematics_direct",
+                "complexity": "deterministic"
+            }
+
+        # 12. Current Course Queries
+        course_queries = [
+            "what is my current course", "whats my current course", "what is my course",
+            "what course am i taking", "what am i studying", "what is my current subject"
+        ]
+        if norm in course_queries:
+            sub_name = ""
+            if session_id:
+                try:
+                    from app.services.tutor_service import tutor_service
+                    st_id = student_data.get("id", 1) if student_data else 1
+                    t_state = tutor_service.get_tutor_session_state(st_id, session_id)
+                    sub_name = t_state.get("active_subject")
+                except Exception:
+                    pass
+            if not sub_name and student_data:
+                sub_name = student_data.get("education") or student_data.get("learning_topics")
+            reply = f"Your current study course is {sub_name or 'English Communication and Robotics with Mizo'}."
+            return {
+                "handled": True,
+                "reply_text": reply,
+                "action": "course_info",
+                "provider": "system",
+                "intent": "course_info",
+                "complexity": "deterministic"
+            }
+
         return None
+
 
     @classmethod
     def classify_route(
@@ -474,17 +662,20 @@ class LLMService:
                     continue
 
                 if res_text and res_text.strip():
-                    latency = round((time.perf_counter() - start_time) * 1000, 2)
-                    if is_fallback_attempt:
-                        print(f"[LLM] Primary failed; successfully used fallback provider: {provider} ({model}) in {latency}ms")
-                    return LLMResult(
-                        text=res_text.strip(),
-                        provider=provider,
-                        model=model,
-                        is_fallback=is_fallback_attempt,
-                        latency_ms=latency,
-                        fallback_chain=fallback_chain
-                    )
+                    clean_res = clean_llm_response(res_text)
+                    if clean_res:
+                        latency = round((time.perf_counter() - start_time) * 1000, 2)
+                        if is_fallback_attempt:
+                            print(f"[LLM] Primary failed; successfully used fallback provider: {provider} ({model}) in {latency}ms")
+                        return LLMResult(
+                            text=clean_res,
+                            provider=provider,
+                            model=model,
+                            is_fallback=is_fallback_attempt,
+                            latency_ms=latency,
+                            fallback_chain=fallback_chain
+                        )
+
 
             except Exception as exc:
                 cat = classify_error(exc)
@@ -574,7 +765,8 @@ class LLMService:
             resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
             if resp.status_code == 200:
                 data = resp.json()
-                return data["choices"][0]["message"]["content"], model
+                raw_content = data["choices"][0]["message"]["content"]
+                return clean_llm_response(raw_content), model
             else:
                 raise RuntimeError(f"Groq API returned HTTP {resp.status_code}: {resp.text}")
 
@@ -602,7 +794,8 @@ class LLMService:
             resp = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
             if resp.status_code == 200:
                 data = resp.json()
-                return data["choices"][0]["message"]["content"], model
+                raw_content = data["choices"][0]["message"]["content"]
+                return clean_llm_response(raw_content), model
             else:
                 raise RuntimeError(f"OpenAI API returned HTTP {resp.status_code}: {resp.text}")
 
@@ -634,8 +827,8 @@ class LLMService:
                 choices = data.get("choices") or []
                 if choices:
                     msg = choices[0].get("message") or {}
-                    content = msg.get("content") or msg.get("reasoning") or ""
-                    return content.strip(), model
+                    content = msg.get("content") or ""
+                    return clean_llm_response(content), model
                 return "", model
             else:
                 raise RuntimeError(f"Qwen/OpenRouter API returned HTTP {resp.status_code}: {resp.text}")
@@ -657,9 +850,11 @@ class LLMService:
             resp = await client.post(f"{base_url.rstrip('/')}/api/chat", json=payload)
             if resp.status_code == 200:
                 data = resp.json()
-                return data.get("message", {}).get("content", ""), model
+                raw_content = data.get("message", {}).get("content", "")
+                return clean_llm_response(raw_content), model
             else:
                 raise RuntimeError(f"Ollama returned HTTP {resp.status_code}: {resp.text}")
+
 
     @classmethod
     async def _verify_groq_health(cls, conf: Dict[str, Any]) -> Dict[str, Any]:

@@ -67,6 +67,12 @@ async def set_audio_mode(payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail=f"Invalid audio mode: '{mode}'. Must be 'esp32' or 'laptop'.")
     clean_mode = str(mode).strip().lower()
     update_db_settings({"audio_mode": clean_mode})
+    if clean_mode == "laptop":
+        try:
+            from app.services.voice_service import voice_manager
+            voice_manager.handle_stop_command()
+        except Exception:
+            pass
     return {"success": True, "audio_mode": clean_mode, "message": f"Audio mode set to {clean_mode}"}
 
 

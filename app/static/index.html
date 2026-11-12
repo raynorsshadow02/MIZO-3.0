@@ -293,9 +293,21 @@
               <h3 id="studio-session-title">Mizo Voice Onboarding & Conversation Studio</h3>
               <p class="text-muted" id="studio-onboarding-hint">Speak naturally. Mizo will lead the dialogue, ask questions, and assess your English communication skills.</p>
             </div>
-            <div style="display:flex; gap:8px; align-items:center;">
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
               <span class="tag tag-accent" id="badge-onboarding-step-indicator">Step: ASK_NAME</span>
-              <button class="btn btn-secondary btn-sm" onclick="document.getElementById('nav-behavior-btn').click()" title="Edit personalized system prompt, persona, and tutoring rules">
+              <button class="btn btn-primary btn-sm" id="btn-new-chat" title="Start a fresh chat conversation with empty message history">
+                ✨ New Chat
+              </button>
+              <button class="btn btn-secondary btn-sm" id="btn-save-to-memory" title="Save important fact, preference, or goal to persistent memory">
+                💾 Save to Memory
+              </button>
+              <button class="btn btn-secondary btn-sm" id="btn-view-memories" title="View & manage saved persistent memories">
+                🧠 Memories (<span id="saved-memories-count">0</span>)
+              </button>
+              <button class="btn btn-secondary btn-sm" id="btn-delete-current-chat" style="color:#f43f5e;" title="Delete current chat conversation messages">
+                🗑️ Delete Chat
+              </button>
+              <button class="btn btn-secondary btn-sm" id="btn-customize-prompt" title="Edit personalized system prompt, persona, and tutoring rules">
                 🧠 Customize Prompt
               </button>
               <button class="btn btn-secondary btn-sm" id="btn-skip-audio-onboarding" title="Complete profile via text answers without audio speaking test">
@@ -392,7 +404,7 @@
                 </div>
                 <div class="voice-timer-setting" title="Inactivity timeout: if no new speech begins after Mizo finishes, return to SLEEP standby">
                   <span>Inactivity Standby Timeout:</span>
-                  <input type="number" id="setting-inactivity-timeout" min="10" max="15" step="1" value="12">s
+                  <input type="number" id="setting-inactivity-timeout" min="5" max="60" step="1" value="20">s
                 </div>
               </div>
               <div style="font-size:0.75rem; color:var(--text-dim);">
@@ -570,6 +582,12 @@
                   <input type="file" id="study-file-input" accept=".pdf,.txt,.json,.md" style="display: none;">
                 </div>
                 <div id="study-upload-status" style="margin-top: 10px; font-size: 0.82rem;"></div>
+                <div style="margin-top:12px;">
+                  <div style="font-weight:600; font-size:0.78rem; color:var(--text-muted); margin-bottom:4px;">Uploaded Documents:</div>
+                  <div id="study-docs-list" style="display:flex; flex-direction:column; gap:4px;">
+                    <span class="text-muted" style="font-size:0.75rem;">No documents uploaded yet.</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -622,6 +640,7 @@
                 <button class="tutor-pill-btn" data-tutor-cmd="Revise this">🔄 Revise Topic</button>
                 <button class="tutor-pill-btn" data-tutor-cmd="Exam prep">🎓 Exam Prep</button>
                 <button class="tutor-pill-btn" data-tutor-cmd="Move to the next topic">⏭️ Next Topic</button>
+                <button class="tutor-pill-btn" data-tutor-cmd="Mark complete">✅ Mark Complete</button>
               </div>
 
               <!-- Study Dialogue Stream -->
@@ -1177,11 +1196,94 @@
     </div>
   </div>
 
+  <!-- Save to Memory Review Modal -->
+  <div class="modal-backdrop" id="modal-save-memory" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>💾 Save to Persistent Memory</h3>
+        <button class="modal-close" id="btn-close-memory-modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:0.9rem; color:var(--text-muted); margin-bottom:12px;">
+          Review and confirm the candidate memory extracted from your conversation. Persistent memories survive page refreshes, new chats, and chat deletion, and are retrieved only when relevant.
+        </p>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label>Memory Category:</label>
+          <select id="memory-category-select" class="form-control">
+            <option value="preference">Preference (Explanation style, format, speed)</option>
+            <option value="project">Project (Hardware, software, engineering)</option>
+            <option value="interest">Interest (Anime, hobbies, topics)</option>
+            <option value="academic">Academic (Subject concepts, syllabus notes)</option>
+            <option value="general">General (Personal fact, opinion)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Candidate Memory Content:</label>
+          <textarea id="memory-content-input" rows="3" class="form-control" placeholder="Memory text..."></textarea>
+          <small class="text-muted" style="font-size:0.75rem; margin-top:4px; display:block;">You can edit this memory before confirming.</small>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-cancel-save-memory">Cancel</button>
+        <button class="btn btn-primary" id="btn-confirm-save-memory">💾 Confirm &amp; Save Memory</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Saved Memories Manager Modal -->
+  <div class="modal-backdrop" id="modal-manage-memories" style="display: none;">
+    <div class="modal-dialog" style="max-width: 650px;">
+      <div class="modal-header">
+        <h3>🧠 Saved Persistent Memories</h3>
+        <button class="modal-close" id="btn-close-manage-memories">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:0.88rem; color:var(--text-muted); margin-bottom:14px;">
+          These memories are stored in SQLite and retrieved selectively when relevant to your prompt. Deleting a chat preserves these memories.
+        </p>
+        <div id="saved-memories-list" style="max-height: 350px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-close-memories-list">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete Current Chat Modal -->
+  <div class="modal-backdrop" id="modal-delete-chat" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 style="color:#f43f5e;">🗑️ Delete Current Chat</h3>
+        <button class="modal-close" id="btn-close-delete-chat-modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:0.95rem; line-height:1.5; margin-bottom:14px;">
+          Are you sure you want to delete this chat conversation?
+        </p>
+        <div style="background: rgba(244, 63, 94, 0.1); border: 1px solid rgba(244, 63, 94, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 14px;">
+          <strong style="color:#f43f5e; display:block; margin-bottom:4px;">This will remove:</strong>
+          <span style="font-size:0.88rem; color:var(--text-muted);">The messages and session context for this specific chat.</span>
+        </div>
+        <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 12px; font-size:0.85rem; color: #6ee7b7;">
+          ✓ <strong>Your learner profile, onboarding status, speaking assessments, and saved memories will be safely preserved.</strong>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-cancel-delete-chat">Cancel</button>
+        <button class="btn btn-primary" id="btn-confirm-delete-chat" style="background:#f43f5e; border-color:#e11d48;">
+          🗑️ Delete Chat
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Notification -->
   <div class="toast" id="toast">Settings Saved</div>
 
-  <script src="/js/mizo_face.js?v=3.0.4"></script>
-  <script src="/js/app.js?v=3.0.4"></script>
+  <script src="/js/mizo_face.js?v=3.0.6"></script>
+  <script src="/js/app.js?v=3.0.6"></script>
 </body>
 </html>
 

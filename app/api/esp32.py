@@ -668,6 +668,22 @@ async def _process_esp32_audio_core(
     if not is_laptop:
         record_esp32_activity(client_ip, "audio_upload")
 
+        # Mutual exclusivity: Suppress ESP32 hardware audio when user selected Laptop Audio mode
+        settings_data = get_db_settings()
+        current_audio_mode = str(settings_data.get("audio_mode") or "esp32").strip().lower()
+        if current_audio_mode == "laptop" and not test_mode:
+            logger.info("[AudioMode] Suppressing ESP32 hardware audio request because Laptop Audio mode is active.")
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "success": False,
+                    "ignored": True,
+                    "reason": "laptop_audio_mode_active",
+                    "audio_mode": "laptop",
+                    "message": "ESP32 hardware audio is ignored because Laptop Audio mode is active."
+                }
+            )
+
     # Read uploaded audio bytes
     audio_bytes = await audio.read()
     if is_laptop and len(audio_bytes) > 15 * 1024 * 1024:
@@ -870,8 +886,24 @@ async def _process_esp32_audio_core(
                 "voice_state": "ACTIVE"
             }
 
+    # For laptop audio, strip wake prefix if present (e.g. "Hey Mizo, what is gravity?")
+    if is_laptop and clean_transcript:
+        is_wake, trailing_speech = is_wake_word(clean_transcript, log_debug=False)
+        if is_wake and trailing_speech:
+            clean_transcript = trailing_speech
+
     # Handle silence or missing speech in active mode (do NOT reset inactivity timer on silence/empty input)
     if not clean_transcript or clean_transcript in ["[Speech Recognition Error]", ""]:
+        if is_laptop:
+            return {
+                "success": True,
+                "ignored": True,
+                "transcript": "",
+                "reply_text": "",
+                "audio_url": None,
+                "voice_state": voice_manager.state.value,
+                "detail": "No audible speech detected on laptop audio."
+            }
         if onboarding_active:
             retry_msg = "I couldn't hear that clearly. Could you say that again?"
             audio_url, wav_path = await tts_service.synthesize_to_file(retry_msg)

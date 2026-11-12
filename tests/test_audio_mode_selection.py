@@ -246,3 +246,77 @@ def test_frontend_playback_logging_and_speech_synthesis_fallback():
     assert "window.speechSynthesis" in app_js
     assert "SpeechSynthesisUtterance" in app_js
 
+
+@pytest.mark.asyncio
+async def test_mutual_exclusivity_esp32_audio_suppressed_in_laptop_mode():
+    """Mutual exclusivity: When Laptop Audio mode is selected, ESP32 audio requests must be ignored with zero audio bytes."""
+    # 1. Set mode to laptop
+    res_mode = client.post("/api/v1/audio/mode", json={"mode": "laptop"})
+    assert res_mode.status_code == 200
+    assert res_mode.json()["audio_mode"] == "laptop"
+
+    sample_rate = 16000
+    wav_io = io.BytesIO()
+    with wave.open(wav_io, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        frames = bytearray()
+        for _ in range(4000):
+            frames.extend(struct.pack('<h', 0))
+        wf.writeframes(frames)
+    wav_io.seek(0)
+
+    # 2. ESP32 sends audio
+    files = {"audio": ("inmp441.wav", wav_io, "audio/wav")}
+    res_esp32 = client.post("/api/v1/esp32/audio?format=audio", files=files, data={"student_id": "1"})
+
+    # Must return 200 application/json with ignored=True (so ESP32 plays 0 bytes)
+    assert res_esp32.status_code == 200
+    assert res_esp32.headers["content-type"] == "application/json"
+    data = res_esp32.json()
+    assert data["ignored"] is True
+    assert data["audio_mode"] == "laptop"
+    assert data["reason"] == "laptop_audio_mode_active"
+
+    # Reset back to esp32 mode for subsequent tests
+    client.post("/api/v1/audio/mode", json={"mode": "esp32"})
+
+
+@pytest.mark.asyncio
+async def test_mutual_exclusivity_esp32_audio_processed_in_esp32_mode():
+    """Mutual exclusivity: When ESP32 Robot mode is selected, ESP32 audio is processed and returns WAV stream."""
+    # 1. Set mode to esp32
+    res_mode = client.post("/api/v1/audio/mode", json={"mode": "esp32"})
+    assert res_mode.status_code == 200
+    assert res_mode.json()["audio_mode"] == "esp32"
+
+    sample_rate = 16000
+    wav_io = io.BytesIO()
+    with wave.open(wav_io, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        frames = bytearray()
+        for _ in range(4000):
+            frames.extend(struct.pack('<h', 0))
+        wf.writeframes(frames)
+    wav_io.seek(0)
+
+    with patch("app.services.stt_service.stt_service.transcribe_audio_with_metadata", new_callable=AsyncMock) as mock_stt, \
+         patch("app.services.llm_service.llm_service.generate_response", new_callable=AsyncMock) as mock_llm:
+        mock_stt.return_value = {"text": "Hey Mizo, what is sound?", "duration_seconds": 0.5, "language": "en"}
+        mock_llm.return_value = LLMResult(
+            text="Sound is a vibration that propagates as an acoustic wave.",
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            is_fallback=False,
+            latency_ms=80.0
+        )
+        files = {"audio": ("inmp441.wav", wav_io, "audio/wav")}
+        res = client.post("/api/v1/esp32/audio?format=audio", files=files, data={"student_id": "1"})
+        assert res.status_code == 200
+        assert res.headers["content-type"] == "audio/wav"
+        assert len(res.content) > 44
+
+

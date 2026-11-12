@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.config import settings
 from app.db.database import get_db_settings, add_conversation_message, get_conversation_history, get_active_session
-from app.services.voice_service import is_stop_command, is_wake_word, VoiceState
+from app.services.voice_service import is_stop_command, is_wake_word, VoiceState, voice_manager
 from app.services.tts_service import map_tts_pronunciation
 from app.services.llm_service import LLMServiceError, LLMErrorCategory, LLMResult
 
@@ -220,6 +220,8 @@ def test_llm_error_clean_handling_without_traceback():
     # Mark onboarding as completed to test regular conversation LLM failure path
     from app.db.database import update_student
     update_student(student_id, {"onboarding_completed": 1})
+    voice_manager.transition_to(VoiceState.ACTIVE_LISTENING, "test_setup")
+    voice_manager.touch_interaction()
 
     with patch("app.services.llm_service.llm_service.generate_response", new_callable=AsyncMock) as mock_llm:
         mock_llm.side_effect = LLMServiceError(

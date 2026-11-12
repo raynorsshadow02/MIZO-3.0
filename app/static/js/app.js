@@ -57,6 +57,26 @@ let ambientNoiseFloor = 0.005;
 let calibrationFrames = 0;
 let wakeWordRecognizer = null;
 let isWakeWordEnabled = true;
+let isWakeRecognizerActive = false;
+let isWakeRecognizerStarting = false;
+let wakeRestartTimer = null;
+
+function stopWakeWordListener() {
+  clearTimeout(wakeRestartTimer);
+  wakeRestartTimer = null;
+  if (wakeWordRecognizer) {
+    try {
+      wakeWordRecognizer.onresult = null;
+      wakeWordRecognizer.onerror = null;
+      wakeWordRecognizer.onend = null;
+      wakeWordRecognizer.onstart = null;
+      wakeWordRecognizer.abort();
+    } catch (e) {}
+    wakeWordRecognizer = null;
+  }
+  isWakeRecognizerActive = false;
+  isWakeRecognizerStarting = false;
+}
 
 // Authoritative Audio Mode Selection: 'esp32' (hardware) or 'laptop' (browser mic & speakers)
 let currentAudioMode = "esp32";
@@ -68,7 +88,7 @@ let esp32HardwareStatusMessage = "Checking ESP32-S3 hardware connection...";
 
 // Separate, clearly defined timers
 let turnEndingSilenceSeconds = 3.0; // Normal conversation turn pause threshold (3s)
-let inactivityTimeoutSeconds = 10.0; // 10-second inactivity = SNOOZE / STANDBY, NOT microphone shutdown
+let inactivityTimeoutSeconds = 20.0; // 20-second inactivity = SNOOZE / STANDBY, monitoring for wake word
 let inactivityTimerId = null;
 let currentAbortController = null;
 
@@ -87,7 +107,6 @@ document.addEventListener("DOMContentLoaded", () => {
   setupEventListeners();
   setupAudioBench();
   initAudioMode();
-  initWakeWordListener();
   setupSettingsEventHandlers();
   initESP32HardwareMonitoring();
   initConversationPolling();
@@ -350,12 +369,13 @@ function initNavigation() {
 // Data Fetching & Sync
 // -------------------------------------------------------------
 async function loadAllData() {
+  // Ensure active session is firmly established before loading conversation messages
+  await loadActiveSession();
   await Promise.all([
     loadSettings(),
     loadProviderStatus(),
     loadStudents(),
     loadHistoricalProgress(),
-    loadActiveSession(),
     loadConversations(),
     loadKnowledgeDocs(),
     loadDevices(),
@@ -732,13 +752,19 @@ async function loadProviderStatus() {
 
 async function loadActiveSession() {
   try {
+    const saved = sessionStorage.getItem("mizo_active_session_id");
     const res = await fetch(`/api/v1/students/${currentStudentId}/sessions/active`);
     if (!res.ok) return;
     const session = await res.json();
 
-    activeSessionId = session.session_id;
+    if (saved) {
+      activeSessionId = saved;
+    } else {
+      activeSessionId = session.session_id;
+      sessionStorage.setItem("mizo_active_session_id", activeSessionId);
+    }
     const statSes = document.getElementById("stat-active-session-id");
-    if (statSes) statSes.textContent = session.session_id.substring(0, 10) + "...";
+    if (statSes) statSes.textContent = (activeSessionId || "").substring(0, 10) + "...";
     const statCount = document.getElementById("stat-session-msg-count");
     if (statCount) statCount.textContent = `${session.metrics.message_count} messages in session`;
     const badgeMode = document.getElementById("badge-session-mode");
@@ -750,6 +776,9 @@ async function loadActiveSession() {
     updateSessionBar("session-grammar", session.metrics.grammar_accuracy, msgCount);
     updateSessionBar("session-vocab", session.metrics.vocabulary_richness, msgCount);
     updateSessionBar("session-pacing", session.metrics.pacing_score, msgCount);
+    if (typeof updateSavedMemoriesCount === "function") {
+      updateSavedMemoriesCount();
+    }
   } catch (err) {
     console.error("Error loading active session:", err);
   }
@@ -1082,9 +1111,9 @@ async function loadConversations(searchQuery = null) {
       }
     }
 
-    // Deduplicate render cycles when messages have not changed
+    // Deduplicate render cycles when messages and active session have not changed
     const latestId = uniqueLogs.length > 0 ? (uniqueLogs[uniqueLogs.length - 1].id || 0) : 0;
-    const currentSig = `${uniqueLogs.length}:${latestId}:${searchQuery || ''}`;
+    const currentSig = `${activeSessionId || 'none'}:${uniqueLogs.length}:${latestId}:${searchQuery || ''}`;
     if (!searchQuery && currentSig === _lastConversationSig) {
       return;
     }
@@ -1092,19 +1121,23 @@ async function loadConversations(searchQuery = null) {
       _lastConversationSig = currentSig;
     }
 
-    // 1. Render in Live Chat Box on Onboarding Studio (preserving scroll position if user scrolled up)
+    // 1. Render in Live Chat Box on Onboarding Studio (scoped strictly to active chat session)
     const chatBox = document.getElementById("chat-messages-container");
     if (chatBox) {
-      if (uniqueLogs.length === 0) {
+      const currentChatLogs = activeSessionId 
+        ? uniqueLogs.filter(m => String(m.session_id) === String(activeSessionId))
+        : [];
+
+      if (currentChatLogs.length === 0) {
         chatBox.innerHTML = `
           <div class="text-muted" style="text-align:center; padding:40px;" id="chat-idle-placeholder">
-            💤 Mizo is in snooze mode.<br>
-            <small style="color:var(--text-dim); margin-top:8px; display:inline-block;">Say <strong>"Hey Mizo"</strong> to wake up and start onboarding.</small>
+            💬 Current chat is clean and ready.<br>
+            <small style="color:var(--text-dim); margin-top:8px; display:inline-block;">Say <strong>"Hey Mizo"</strong> or type a message below to start chatting.</small>
           </div>
         `;
       } else {
         const wasNearBottom = (chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight) <= 80;
-        chatBox.innerHTML = uniqueLogs.map(msg => renderChatMessage(msg)).join("");
+        chatBox.innerHTML = currentChatLogs.map(msg => renderChatMessage(msg)).join("");
         if (wasNearBottom) {
           chatBox.scrollTop = chatBox.scrollHeight;
         }
@@ -1532,26 +1565,27 @@ function startInactivityCountdown() {
   clearTimeout(inactivityTimerId);
   const timeoutMs = inactivityTimeoutSeconds * 1000;
   inactivityTimerId = setTimeout(() => {
-    if (currentVoiceState === VoiceState.ACTIVE_LISTENING) {
-      console.log(`[Voice SM] 10s Inactivity reached with no user speech. Entering SNOOZE mode. Audio monitoring remains active.`);
-      showToast(`💤 10s Inactivity. Entered Sleep. Say 'Mizo' to wake up.`);
-      // Idle time alone must not make an active conversation reject the next turn.
-      // Explicit stop commands remain the only transition into standby.
-      setSilenceBadge("Ready (Listening...)", "playing");
-      startInactivityCountdown();
+    if (currentVoiceState === VoiceState.ACTIVE_LISTENING && !isMizoSpeaking && !isProcessingBackend) {
+      console.log(`[Voice SM] ${inactivityTimeoutSeconds}s Inactivity reached with no user speech. Entering SNOOZED mode.`);
+      showToast(`💤 Inactivity timeout (${inactivityTimeoutSeconds}s). Snoozed. Say 'Hey Mizo' to wake up.`);
+      stopVoiceRecording();
+      setVoiceState(VoiceState.SNOOZED, "inactivity_timeout");
     }
   }, timeoutMs);
 }
 
 function detectMizoIntent(text) {
   if (!text || !text.trim()) {
-    console.log(`[WAKE] Raw transcription: "${text}"\n[WAKE] Normalized: ""\n[WAKE] Similarity to "mizo": 0.00\n[WAKE] Intent: UNKNOWN`);
     return "UNKNOWN";
   }
-  const norm = text.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+  let t = (text || "").toLowerCase().trim().replace(/['’]/g, "");
+  // 1. Split joined greetings: heymizo -> hey mizo, himizu -> hi mizu
+  t = t.replace(/\b(hey|hi|hello|he|hay|ay)\s*(miz[ou]|mis[ou]|meez[ou]|mees[ou])\b/gi, "$1 $2");
+  // 2. Merge split/hyphenated syllables: mi-zo, mi-zu, mi zo, mi zu, me zo, me so, mee-zo -> mizo
+  t = t.replace(/\b(mi|me|mee|my)[\s\-]+(zo|zu|so|su|zoh|zoo|zue)\b/gi, "$1$2");
+  const norm = t.replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
   const words = norm.split(" ").filter(Boolean);
   if (words.length === 0) {
-    console.log(`[WAKE] Raw transcription: "${text}"\n[WAKE] Normalized: ""\n[WAKE] Similarity to "mizo": 0.00\n[WAKE] Intent: UNKNOWN`);
     return "UNKNOWN";
   }
 
@@ -1559,7 +1593,7 @@ function detectMizoIntent(text) {
   const stopPhrases = [
     "stop mizo", "mizo stop", "stop meeso", "meeso stop", "stop miso", "miso stop",
     "stop mikaza", "mikaza stop", "stop megaza", "megaza stop", "stop", "stop listening",
-    "stop talking", "stop now", "stop please", "please stop"
+    "stop talking", "stop now", "stop please", "please stop", "go to sleep"
   ];
   if (stopPhrases.includes(norm) || stopPhrases.some(p => norm.startsWith(p + " "))) {
     console.log(`[WAKE] Raw transcription: "${text}"\n[WAKE] Normalized: "${norm}"\n[WAKE] Similarity to "mizo": 0.00\n[WAKE] Intent: STOP`);
@@ -1569,16 +1603,19 @@ function detectMizoIntent(text) {
   // 2. Helper to test Mizo word phonetically and fuzzily
   function isMizoWord(w) {
     if (!w) return false;
-    if (["mizo", "miso", "meeso", "meso", "mezo", "mizzo", "meiso", "mizu", "myzo"].includes(w)) return true;
-    if (["mikaza", "megaza", "mikasa", "mikkaza", "makaza", "micaza"].includes(w)) return true;
-    let p = w.replace(/ee|ei|ey|ea|y/g, "i");
+    const clean = w.toLowerCase().replace(/[^\w]/g, "");
+    if (["mizo", "miso", "meeso", "meso", "mezo", "mizzo", "meiso", "mizu", "myzo", "mizoo", "mizoh", "misa", "miza"].includes(clean)) return true;
+    if (["mikaza", "megaza", "mikasa", "mikkaza", "makaza", "micaza"].includes(clean)) return true;
+    let p = clean.replace(/ee|ei|ey|ea|y/g, "i");
     if (p.startsWith("me") && (p.length === 4 || p.length === 5)) p = "mi" + p.slice(2);
     p = p.replace(/zz|ss|s/g, "z");
-    if (p.endsWith("u")) p = p.slice(0, -1) + "o";
+    if (p.endsWith("u") || p.endsWith("oh") || p.endsWith("oo")) p = p.replace(/(?:u|oh|oo)$/, "o");
     p = p.replace(/(.)\1+/g, "$1");
     if (p === "mizo") return true;
     return false;
   }
+
+  const culinaryMismatches = ["soup", "paste", "broth", "ramen", "recipe", "dressing", "sauce", "bowl", "tofu", "dish", "glazed", "marinated"];
 
   let isWake = false;
   let bestSim = 0.0;
@@ -1596,19 +1633,28 @@ function detectMizoIntent(text) {
     bestSim = 1.0;
   }
   // Condition B: Natural greeting followed by Mizo (e.g. "Hey Mizo", "Hello Mizo", "Hi Mizo")
-  else if (["hey", "hi", "hello", "yo", "ok", "okay"].includes(words[0]) && words.length >= 2 && isMizoWord(words[1])) {
-    isWake = true;
-    bestSim = 1.0;
+  else if (["hey", "hi", "hello", "yo", "ok", "okay", "he", "hay"].includes(words[0]) && words.length >= 2 && isMizoWord(words[1])) {
+    if (words.length >= 3 && ["miso", "meso", "meeso"].includes(words[1]) && culinaryMismatches.includes(words[2])) {
+      isWake = false;
+    } else {
+      isWake = true;
+      bestSim = 1.0;
+    }
   }
   // Condition C: Utterance starting with Mizo (e.g. "Mizo, are you there?", "Mizo, wake up")
   else if (isMizoWord(words[0])) {
-    isWake = true;
-    bestSim = 1.0;
+    if (["miso", "meso", "meeso"].includes(words[0]) && words.length >= 2 && culinaryMismatches.includes(words[1])) {
+      isWake = false;
+    } else {
+      isWake = true;
+      bestSim = 1.0;
+    }
   }
-  // Condition D: Addressing phrases ending with Mizo (e.g. "Wake up, Mizo", "Can you hear me, Mizo", "What's up, Mizo")
+  // Condition D: Addressing phrases ending with Mizo (e.g. "Wake up, Mizo", "Good morning Mizo", "Can you hear me, Mizo")
   else if (isMizoWord(words[words.length - 1])) {
-    const addressingStarters = ["wake up", "are you there", "can you hear me", "whats up", "what is up", "hello", "hey", "hi", "talk to me", "listen to me"];
-    if (addressingStarters.some(s => norm.includes(s))) {
+    if (["miso", "meso", "meeso"].includes(words[words.length - 1]) && words.length >= 2 && culinaryMismatches.includes(words[words.length - 2])) {
+      isWake = false;
+    } else {
       isWake = true;
       bestSim = 1.0;
     }
@@ -1618,6 +1664,19 @@ function detectMizoIntent(text) {
     isWake = true;
     bestSim = 0.95;
   }
+  // Condition F: Clear sentence containing Mizo as a spoken word
+  else if (words.some(w => isMizoWord(w))) {
+    for (let i = 0; i < words.length; i++) {
+      if (isMizoWord(words[i])) {
+        if (i + 1 < words.length && culinaryMismatches.includes(words[i + 1])) {
+          continue;
+        }
+        isWake = true;
+        bestSim = 1.0;
+        break;
+      }
+    }
+  }
 
   const intent = isWake ? "WAKE" : "NORMAL";
   console.log(`[WAKE] Raw transcription: "${text}"\n[WAKE] Normalized: "${norm}"\n[WAKE] Similarity to "mizo": ${bestSim.toFixed(2)}\n[WAKE] Intent: ${intent}`);
@@ -1625,7 +1684,10 @@ function detectMizoIntent(text) {
 }
 
 function extractMizoTrailingText(fullTranscript) {
-  const norm = fullTranscript.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+  let t = (fullTranscript || "").toLowerCase().trim().replace(/['’]/g, "");
+  t = t.replace(/\b(hey|hi|hello|he|hay|ay)\s*(miz[ou]|mis[ou]|meez[ou]|mees[ou])\b/gi, "$1 $2");
+  t = t.replace(/\b(mi|me|mee|my)[\s\-]+(zo|zu|so|su|zoh|zoo|zue)\b/gi, "$1$2");
+  const norm = t.replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
   const words = norm.split(" ").filter(Boolean);
   const rawWords = fullTranscript.trim().split(/\s+/).filter(Boolean);
 
@@ -1637,25 +1699,56 @@ function extractMizoTrailingText(fullTranscript) {
     let p = clean.replace(/ee|ei|ey|ea|y/g, "i");
     if (p.startsWith("me") && (p.length === 4 || p.length === 5)) p = "mi" + p.slice(2);
     p = p.replace(/zz|ss|s/g, "z");
-    if (p.endsWith("u")) p = p.slice(0, -1) + "o";
+    if (p.endsWith("u") || p.endsWith("oh") || p.endsWith("oo")) p = p.replace(/(?:u|oh|oo)$/, "o");
     p = p.replace(/(.)\1+/g, "$1");
     return p === "mizo";
   }
 
   let trailing = "";
-  if (words.length >= 2 && ["hey", "hi", "hello", "yo", "ok", "okay"].includes(words[0]) && isMizoWord(words[1])) {
+  if (words.length >= 2 && ["hey", "hi", "hello", "yo", "ok", "okay", "he", "hay"].includes(words[0]) && isMizoWord(words[1])) {
     trailing = rawWords.slice(2).join(" ").trim();
   } else if (words.length >= 1 && isMizoWord(words[0])) {
     trailing = rawWords.slice(1).join(" ").trim();
   } else if (words.length >= 1 && isMizoWord(words[words.length - 1])) {
-    trailing = "";
+    const prefix = words.slice(0, -1).join(" ").trim();
+    if (["good morning", "good afternoon", "good evening", "hello", "hi", "hey", "wake up"].includes(prefix)) {
+      trailing = "";
+    } else {
+      trailing = rawWords.slice(0, -1).join(" ").trim();
+    }
+  } else if (words.some(w => isMizoWord(w))) {
+    const idx = words.findIndex(w => isMizoWord(w));
+    const afterMizo = rawWords.slice(idx + 1).join(" ").trim();
+    if (afterMizo) {
+      trailing = afterMizo;
+    } else {
+      trailing = rawWords.filter((w, i) => i !== idx).join(" ").trim();
+    }
   }
 
   const cleanTrailing = trailing.toLowerCase().replace(/[^\w\s]/g, "").trim();
-  if (["are you there", "wake up", "can you hear me", "whats up", "what is up", "please wake up"].includes(cleanTrailing)) {
+  if (["are you there", "wake up", "can you hear me", "whats up", "what is up", "please wake up", "good morning", "good afternoon", "good evening"].includes(cleanTrailing)) {
     trailing = "";
   }
   return trailing;
+}
+
+function playWakeChime() {
+  try {
+    const ctx = audioContext || new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === "suspended") ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12); // A5
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.18);
+  } catch (e) {}
 }
 
 function isVoiceIdleState(state) {
@@ -1665,32 +1758,32 @@ function isVoiceIdleState(state) {
 function handleWakeWordDetected(fullTranscript) {
   if (isMicMuted || !isVoiceIdleState(currentVoiceState)) return;
 
+  stopWakeWordListener();
+
   console.log(`[VOICE] Heard: "${fullTranscript}"`);
   console.log(`[VOICE] Wake word detected: Mizo`);
   console.log(`[VOICE] Wake word detected`);
   console.log(`[VOICE] Waking assistant`);
-  console.log(`[VOICE] State: ACTIVE_CONVERSATION`);
+  console.log(`[VOICE] State: ACTIVE_LISTENING`);
 
   const remainingText = extractMizoTrailingText(fullTranscript);
 
   showToast("🎙️ 'Mizo' recognized! Active mode enabled.");
+  playWakeChime();
 
   if (remainingText.length > 0) {
-    // Treat trailing words as direct user input
-    setVoiceState(VoiceState.ACTIVE_CONVERSATION, "wake_with_speech");
+    // Treat trailing words as direct user input / turn
+    setVoiceState(VoiceState.ACTIVE_LISTENING, "wake_with_speech");
     const textInput = document.getElementById("sim-text-input");
     if (textInput) textInput.value = remainingText;
     sendTextMessage(remainingText);
   } else {
-    // Wake phrase alone -> transition to ACTIVE_CONVERSATION & acknowledge
-    setVoiceState(VoiceState.ACTIVE_CONVERSATION, "wake_phrase");
+    // Wake phrase alone -> transition to ACTIVE_LISTENING & start hands-free listening
+    setVoiceState(VoiceState.ACTIVE_LISTENING, "wake_phrase");
     console.log("[VOICE] Listening for user request");
-    const chatBox = document.getElementById("chat-messages-container");
-    const hasHistory = chatBox && chatBox.querySelectorAll(".chat-bubble").length > 1;
-    if (!hasHistory) {
-      triggerMizoStartGreeting();
-    } else {
-      sendTextMessage("Hey Mizo");
+    setSilenceBadge("🟢 Listening for your question...", "playing");
+    if (currentAudioMode === "laptop") {
+      startVoiceRecording(true);
     }
   }
 }
@@ -1740,9 +1833,9 @@ function executeMizoStop() {
   }
   isRecording = false;
 
-  // 4. Return to WAKE_LISTENING mode with microphone & listener active
-  setVoiceState(VoiceState.WAKE_LISTENING, "mizo_stop_command");
-  showToast("🛑 'Mizo stop' executed. Wake listening active.");
+  // 4. Return to SNOOZED / WAKE_LISTENING mode with listener active
+  setVoiceState(VoiceState.SNOOZED, "mizo_stop_command");
+  showToast("🛑 'Mizo stop' executed. Standby mode active.");
 }
 const executeMikazaStop = executeMizoStop;
 
@@ -1946,8 +2039,10 @@ function initAudioContextVAD(stream) {
           }
           speechDetected = true;
           silenceStartTimestamp = null;
+          // Valid speech detected: reset 20s inactivity countdown
+          startInactivityCountdown();
           setSilenceBadge("🗣️ Capturing speech...", "speaking");
-        } else if (speechDetected || elapsedSinceStart > 1.5) {
+        } else if (speechDetected) {
           if (!silenceStartTimestamp) {
             silenceStartTimestamp = now;
           }
@@ -1957,17 +2052,23 @@ function initAudioContextVAD(stream) {
           setSilenceBadge(`⏳ Silence detected (auto-send in ${remaining}s)`, "silence-countdown");
 
           if (silenceDuration >= turnEndingSilenceSeconds) {
-            console.log(`[VAD] Turn ending silence threshold (${turnEndingSilenceSeconds}s) reached.`);
+            console.log(`[VAD] Turn ending silence threshold (${turnEndingSilenceSeconds}s) reached after speech.`);
             setVoiceState(VoiceState.PROCESSING, "turn_silence_threshold");
             stopVoiceRecording();
             return;
           }
+        } else {
+          setSilenceBadge("🟢 Ready (Listening...)", "playing");
         }
       }
 
       vadAnimationId = requestAnimationFrame(checkVolume);
     };
 
+    if (vadAnimationId) {
+      cancelAnimationFrame(vadAnimationId);
+      vadAnimationId = null;
+    }
     vadAnimationId = requestAnimationFrame(checkVolume);
   } catch (err) {
     console.warn("VAD Web Audio initialization error:", err);
@@ -1994,14 +2095,22 @@ async function startVoiceRecording(isAuto = false) {
   const recordStatus = document.getElementById("record-status-text");
   const timerEl = document.getElementById("record-hud-timer");
 
+  speechDetected = false;
+  silenceStartTimestamp = null;
+  audioChunks = [];
+  recordStartTime = Date.now();
+  startInactivityCountdown();
+
   try {
-    micMediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
-    });
+    if (!micMediaStream || !micMediaStream.active || micMediaStream.getAudioTracks().every(t => t.readyState === "ended")) {
+      micMediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+    }
 
     laptopMicPermissionGranted = true;
     updateLaptopStatusIndicator();
@@ -2024,7 +2133,10 @@ async function startVoiceRecording(isAuto = false) {
 
     mediaRecorder.onstop = async () => {
       clearInterval(recordTimerInterval);
-      if (vadAnimationId) cancelAnimationFrame(vadAnimationId);
+      if (vadAnimationId) {
+        cancelAnimationFrame(vadAnimationId);
+        vadAnimationId = null;
+      }
 
       const durationSecs = Math.round((Date.now() - recordStartTime) / 1000);
       lastRecordedDuration = durationSecs;
@@ -2033,17 +2145,21 @@ async function startVoiceRecording(isAuto = false) {
       const audioBlob = new Blob(audioChunks, { type: recordedMime });
       lastRecordedBlob = audioBlob;
 
-      // Retain micMediaStream active so AudioContext VAD remains continuously available for barge-in
-      // Tracks are only terminated if user explicitly mutes the microphone or switches modes.
-
-      // If user said "Mizo stop", do not send
-      if (currentVoiceState === VoiceState.WAKE_ONLY) return;
+      // If user said "Mizo stop" or state entered SNOOZED, do not send
+      if (currentVoiceState === VoiceState.WAKE_ONLY || currentVoiceState === VoiceState.SNOOZED || currentVoiceState === VoiceState.STANDBY) {
+        console.log("[Voice SM] Recording stopped in snoozed/standby. Discarding audio.");
+        return;
+      }
 
       // Check if user spoke before sending
-      if (!speechDetected && durationSecs < 1.8 && currentVoiceState !== VoiceState.ASSESSMENT_RECORDING) {
-        setTimeout(() => {
-          if (currentVoiceState === VoiceState.ACTIVE_LISTENING && !isMikazaSpeaking) startVoiceRecording(true);
-        }, 500);
+      if (!speechDetected && currentVoiceState !== VoiceState.ASSESSMENT_RECORDING) {
+        console.log("[Voice SM] No speech detected in turn. Discarding audio blob and staying in active listening.");
+        if (currentVoiceState === VoiceState.PROCESSING) {
+          setVoiceState(VoiceState.ACTIVE_LISTENING, "no_speech_detected_stay_listening");
+          if (!isRecording && !isMicMuted && !isMizoSpeaking && !isProcessingBackend) {
+            startVoiceRecording(true);
+          }
+        }
         return;
       }
 
@@ -2375,7 +2491,7 @@ function setupAudioBench() {
     settingInactivity.value = inactivityTimeoutSeconds;
     settingInactivity.addEventListener("change", () => {
       const val = parseFloat(settingInactivity.value);
-      if (!isNaN(val) && val >= 10.0 && val <= 15.0) {
+      if (!isNaN(val) && val >= 5.0 && val <= 60.0) {
         inactivityTimeoutSeconds = val;
         showToast(`Inactivity standby timeout set to ${inactivityTimeoutSeconds}s`);
       } else {
@@ -2403,75 +2519,120 @@ function setupAudioBench() {
 }
 
 function initWakeWordListener() {
-  // Requirement 1 & 9: Browser microphone listening disabled. Audio input is exclusive to ESP32-S3 INMP441.
-  if (isLaptopAudioDisabled) {
-    console.log("[Wake Word] Laptop microphone listener disabled. Hardware microphone (INMP441) on ESP32-S3 is active.");
+  if (isLaptopAudioDisabled || currentAudioMode !== "laptop") {
+    stopWakeWordListener();
+    return;
+  }
+  if (!isWakeWordEnabled || isMicMuted || !isVoiceIdleState(currentVoiceState)) {
+    stopWakeWordListener();
     return;
   }
 
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRec) {
-    console.log("[Wake Word] Local browser SpeechRecognition not supported in this environment; development fallback button available.");
+    console.log("[Wake Word] Local browser SpeechRecognition not supported in this environment; manual microphone button available.");
     return;
   }
 
+  if (isWakeRecognizerActive || isWakeRecognizerStarting) {
+    return;
+  }
+
+  stopWakeWordListener();
+
   try {
-    if (wakeWordRecognizer) {
-      try { wakeWordRecognizer.abort(); } catch (e) {}
-    }
+    isWakeRecognizerStarting = true;
+    const recognizer = new SpeechRec();
+    wakeWordRecognizer = recognizer;
+    recognizer.continuous = true;
+    recognizer.interimResults = true;
+    recognizer.lang = "en-US";
 
-    wakeWordRecognizer = new SpeechRec();
-    wakeWordRecognizer.continuous = true;
-    wakeWordRecognizer.interimResults = false;
-    wakeWordRecognizer.lang = "en-US";
+    let localWakeTriggered = false;
 
-    wakeWordRecognizer.onresult = (event) => {
-      if (!isWakeWordEnabled || isMicMuted || !isVoiceIdleState(currentVoiceState)) return;
+    recognizer.onstart = () => {
+      isWakeRecognizerStarting = false;
+      isWakeRecognizerActive = true;
+      console.log("[Wake Word Engine] Listening for wake phrase ('Hey Mizo', 'Mizo')...");
+    };
 
-      const lastResultIndex = event.results.length - 1;
-      const transcript = event.results[lastResultIndex][0].transcript.trim();
+    recognizer.onresult = (event) => {
+      if (!isWakeWordEnabled || isMicMuted || localWakeTriggered || !isVoiceIdleState(currentVoiceState)) return;
 
-      const intent = detectMizoIntent(transcript);
-      if (intent === "STOP") {
-        executeMikazaStop();
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const res = event.results[i];
+        const transcript = res[0] ? res[0].transcript.trim() : "";
+        if (!transcript) continue;
+
+        const intent = detectMizoIntent(transcript);
+        if (intent === "STOP") {
+          executeMizoStop();
+          return;
+        }
+        if (intent === "WAKE") {
+          localWakeTriggered = true;
+          stopWakeWordListener();
+          handleWakeWordDetected(transcript);
+          return;
+        }
+      }
+    };
+
+    recognizer.onerror = (e) => {
+      isWakeRecognizerActive = false;
+      isWakeRecognizerStarting = false;
+      if (e.error === "not-allowed" || e.error === "permission-denied") {
+        console.warn("[Wake Word Engine] Microphone permission denied.");
+        stopWakeWordListener();
+        setVoiceState(VoiceState.ERROR_RECOVERY, "mic_permission_denied");
+        showToast("⚠️ Microphone permission denied. Please allow microphone access in your browser settings to speak to Mizo.", true);
         return;
       }
-      if (intent === "WAKE") {
-        handleWakeWordDetected(transcript);
-      } else {
-        console.log(`[VOICE] Heard: "${transcript}"`);
-        console.log("[VOICE] No wake word. Ignoring.");
-      }
-    };
-
-    wakeWordRecognizer.onerror = (e) => {
       if (e.error !== "no-speech" && e.error !== "aborted") {
-        console.log("[Wake Word Engine]", e.error);
-      }
-      if (isWakeWordEnabled && !isMicMuted && isVoiceIdleState(currentVoiceState)) {
-        setTimeout(() => {
-          try { wakeWordRecognizer.start(); } catch (err) {}
-        }, 800);
+        console.log("[Wake Word Engine] Notice:", e.error);
       }
     };
 
-    wakeWordRecognizer.onend = () => {
-      if (isWakeWordEnabled && !isMicMuted && isVoiceIdleState(currentVoiceState)) {
-        setTimeout(() => {
-          try { wakeWordRecognizer.start(); } catch (e) {}
-        }, 500);
+    recognizer.onend = () => {
+      isWakeRecognizerActive = false;
+      isWakeRecognizerStarting = false;
+      if (recognizer !== wakeWordRecognizer) return;
+
+      if (isWakeWordEnabled && !isMicMuted && isVoiceIdleState(currentVoiceState) && !localWakeTriggered) {
+        clearTimeout(wakeRestartTimer);
+        wakeRestartTimer = setTimeout(() => {
+          if (isWakeWordEnabled && !isMicMuted && isVoiceIdleState(currentVoiceState) && !isWakeRecognizerActive && !isWakeRecognizerStarting) {
+            initWakeWordListener();
+          }
+        }, 400);
       }
     };
 
-    wakeWordRecognizer.start();
+    recognizer.start();
   } catch (err) {
-    console.log("Wake word initialization notice:", err);
+    isWakeRecognizerStarting = false;
+    isWakeRecognizerActive = false;
+    console.warn("Wake word initialization notice:", err);
   }
 }
 
 async function sendAudioToBackend(audioBlob, isAssessment = false) {
-  if (currentVoiceState === VoiceState.WAKE_ONLY || currentVoiceState === VoiceState.STANDBY) {
-    console.log("[Voice SM] In STANDBY mode. Discarding audio upload.");
+  if (isProcessingBackend) {
+    console.log("[Voice SM] Already processing audio turn, ignoring duplicate invocation.");
+    return;
+  }
+  if (currentVoiceState === VoiceState.WAKE_ONLY || currentVoiceState === VoiceState.STANDBY || currentVoiceState === VoiceState.SNOOZED) {
+    console.log("[Voice SM] In SNOOZED mode. Discarding audio upload.");
+    return;
+  }
+  if (!audioBlob || audioBlob.size < 1000) {
+    console.log("[Voice SM] Discarding empty audio blob.");
+    if (currentVoiceState === VoiceState.PROCESSING) {
+      setVoiceState(VoiceState.ACTIVE_LISTENING, "empty_audio_discarded");
+      if (!isRecording && !isMicMuted && !isMizoSpeaking && !isProcessingBackend) {
+        startVoiceRecording(true);
+      }
+    }
     return;
   }
 
@@ -2515,6 +2676,18 @@ async function sendAudioToBackend(audioBlob, isAssessment = false) {
 
     if (data.is_control_command && data.command === "stop") {
       executeMikazaStop();
+      return;
+    }
+
+    if (data.ignored) {
+      console.log("[Voice SM] Backend reported turn ignored (silence or non-speech).");
+      if (currentVoiceState !== VoiceState.WAKE_ONLY && currentVoiceState !== VoiceState.STANDBY && currentVoiceState !== VoiceState.SNOOZED) {
+        setVoiceState(VoiceState.ACTIVE_LISTENING, "turn_ignored");
+        startInactivityCountdown();
+        if (currentAudioMode === "laptop" && !isMicMuted && !isRecording) {
+          startVoiceRecording(true);
+        }
+      }
       return;
     }
 
@@ -2601,7 +2774,22 @@ async function sendTextMessage(overrideText = null) {
     }
     currentAbortController = null;
     console.error("Chat error:", err);
-    updateMizoFace("error", "Something went wrong. Please try again.", "Error formulating response");
+    updateMizoFace("error", "AI request failed. Please check connection.", "Error formulating response");
+    const chatBox = document.getElementById("chat-messages-container");
+    if (chatBox) {
+      const errDiv = document.createElement("div");
+      errDiv.className = "chat-bubble assistant";
+      errDiv.style.borderLeft = "3px solid #f43f5e";
+      errDiv.innerHTML = `
+        <div class="chat-avatar">⚠️</div>
+        <div class="chat-body">
+          <div class="chat-meta" style="color:#f43f5e;"><strong>System Alert</strong> • AI Service Unreachable</div>
+          <div class="chat-text" style="color:#fca5a5;">The AI service request timed out or was unreachable. Please verify your internet connection or API keys in the Settings tab, then try again.</div>
+        </div>
+      `;
+      chatBox.appendChild(errDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
     if (currentVoiceState !== VoiceState.WAKE_ONLY && currentVoiceState !== VoiceState.STANDBY && currentVoiceState !== VoiceState.SNOOZED) {
       setTimeout(() => {
         setVoiceState(VoiceState.READY, "chat_error_fallback");
@@ -2656,9 +2844,16 @@ async function handleInteractionResponse(data) {
             updateMizoFace("idle");
           }
           laptopAudioPlayer = null;
-          if (currentVoiceState !== VoiceState.ASSESSMENT_RECORDING) {
-            setSilenceBadge("Ready • Laptop Audio Active", "idle");
-            setVoiceState(VoiceState.READY, "speech_playback_ended");
+          if (currentVoiceState !== VoiceState.ASSESSMENT_RECORDING && currentVoiceState !== VoiceState.SNOOZED && currentVoiceState !== VoiceState.STANDBY) {
+            setSilenceBadge("🟢 Ready (Listening...)", "playing");
+            setVoiceState(VoiceState.ACTIVE_LISTENING, "speech_playback_ended_auto_listen");
+            if (currentAudioMode === "laptop" && !isMicMuted) {
+              setTimeout(() => {
+                if (currentVoiceState === VoiceState.ACTIVE_LISTENING && !isMizoSpeaking) {
+                  startVoiceRecording(true);
+                }
+              }, 300);
+            }
           }
         };
         laptopAudioPlayer.onerror = (e) => {
@@ -2677,6 +2872,17 @@ async function handleInteractionResponse(data) {
                 isMizoSpeaking = false;
                 if (waveform) waveform.classList.remove("playing");
                 updateMizoFace(!isStudentOnboardingComplete ? "onboarding" : "idle");
+                if (currentVoiceState !== VoiceState.ASSESSMENT_RECORDING && currentVoiceState !== VoiceState.SNOOZED && currentVoiceState !== VoiceState.STANDBY) {
+                  setSilenceBadge("🟢 Ready (Listening...)", "playing");
+                  setVoiceState(VoiceState.ACTIVE_LISTENING, "synth_playback_ended_auto_listen");
+                  if (currentAudioMode === "laptop" && !isMicMuted) {
+                    setTimeout(() => {
+                      if (currentVoiceState === VoiceState.ACTIVE_LISTENING && !isMizoSpeaking) {
+                        startVoiceRecording(true);
+                      }
+                    }, 300);
+                  }
+                }
               };
               utter.onerror = (err) => console.warn("[Laptop Audio] SpeechSynthesis error:", err);
               window.speechSynthesis.speak(utter);
@@ -2698,6 +2904,17 @@ async function handleInteractionResponse(data) {
               isMizoSpeaking = false;
               if (waveform) waveform.classList.remove("playing");
               updateMizoFace(!isStudentOnboardingComplete ? "onboarding" : "idle");
+              if (currentVoiceState !== VoiceState.ASSESSMENT_RECORDING && currentVoiceState !== VoiceState.SNOOZED && currentVoiceState !== VoiceState.STANDBY) {
+                setSilenceBadge("🟢 Ready (Listening...)", "playing");
+                setVoiceState(VoiceState.ACTIVE_LISTENING, "fallback_synth_ended_auto_listen");
+                if (currentAudioMode === "laptop" && !isMicMuted) {
+                  setTimeout(() => {
+                    if (currentVoiceState === VoiceState.ACTIVE_LISTENING && !isMizoSpeaking) {
+                      startVoiceRecording(true);
+                    }
+                  }, 300);
+                }
+              }
             };
             window.speechSynthesis.speak(utter);
           } catch (synthErr) {
@@ -2713,6 +2930,17 @@ async function handleInteractionResponse(data) {
               updateMizoFace("onboarding");
             } else {
               updateMizoFace("idle");
+            }
+            if (currentVoiceState !== VoiceState.ASSESSMENT_RECORDING && currentVoiceState !== VoiceState.SNOOZED && currentVoiceState !== VoiceState.STANDBY) {
+              setSilenceBadge("🟢 Ready (Listening...)", "playing");
+              setVoiceState(VoiceState.ACTIVE_LISTENING, "timer_playback_ended_auto_listen");
+              if (currentAudioMode === "laptop" && !isMicMuted) {
+                setTimeout(() => {
+                  if (currentVoiceState === VoiceState.ACTIVE_LISTENING && !isMizoSpeaking) {
+                    startVoiceRecording(true);
+                  }
+                }, 300);
+              }
             }
           }, speakDurationMs);
         }
@@ -2748,8 +2976,17 @@ async function handleInteractionResponse(data) {
     }
   } else {
     if (!isMizoSpeaking) {
-      setVoiceState(VoiceState.READY, "speech_response_delivered");
-      setSilenceBadge(currentAudioMode === "laptop" ? "Ready • Laptop Audio Active" : "Ready • ESP32-S3 Hardware Active", "idle");
+      if (currentVoiceState !== VoiceState.ASSESSMENT_RECORDING && currentVoiceState !== VoiceState.SNOOZED && currentVoiceState !== VoiceState.STANDBY) {
+        setVoiceState(VoiceState.ACTIVE_LISTENING, "speech_response_delivered");
+        setSilenceBadge("🟢 Ready (Listening...)", "playing");
+        if (currentAudioMode === "laptop" && !isMicMuted) {
+          setTimeout(() => {
+            if (currentVoiceState === VoiceState.ACTIVE_LISTENING && !isMizoSpeaking) {
+              startVoiceRecording(true);
+            }
+          }, 300);
+        }
+      }
     }
   }
 
@@ -2841,27 +3078,78 @@ function setupEventListeners() {
   setupStudySectionEventListeners();
   setupSpeechSectionEventListeners();
 
-  // 1. Start New Session Button
+  // New Chat Button (Independent from New Session)
+  const btnNewChat = document.getElementById("btn-new-chat");
+  if (btnNewChat) {
+    btnNewChat.addEventListener("click", () => startNewChat());
+  }
+
+  // Save to Memory Review Modal Controls
+  const btnSaveMem = document.getElementById("btn-save-to-memory");
+  if (btnSaveMem) {
+    btnSaveMem.addEventListener("click", () => openSaveMemoryModal());
+  }
+  const btnConfirmSaveMem = document.getElementById("btn-confirm-save-memory");
+  if (btnConfirmSaveMem) {
+    btnConfirmSaveMem.addEventListener("click", () => confirmSaveMemory());
+  }
+  const btnCancelSaveMem = document.getElementById("btn-cancel-save-memory");
+  const btnCloseMemModal = document.getElementById("btn-close-memory-modal");
+  [btnCancelSaveMem, btnCloseMemModal].forEach(b => {
+    if (b) b.addEventListener("click", () => {
+      const modal = document.getElementById("modal-save-memory");
+      if (modal) modal.style.display = "none";
+    });
+  });
+
+  // Saved Memories List Modal Controls
+  const btnViewMem = document.getElementById("btn-view-memories");
+  if (btnViewMem) {
+    btnViewMem.addEventListener("click", () => openManageMemoriesModal());
+  }
+  const btnCloseManageMem = document.getElementById("btn-close-manage-memories");
+  const btnCloseMemList = document.getElementById("btn-close-memories-list");
+  [btnCloseManageMem, btnCloseMemList].forEach(b => {
+    if (b) b.addEventListener("click", () => {
+      const modal = document.getElementById("modal-manage-memories");
+      if (modal) modal.style.display = "none";
+    });
+  });
+
+  // Delete Current Chat Modal Controls
+  const btnDeleteChat = document.getElementById("btn-delete-current-chat");
+  if (btnDeleteChat) {
+    btnDeleteChat.addEventListener("click", () => {
+      const modal = document.getElementById("modal-delete-chat");
+      if (modal) modal.style.display = "flex";
+    });
+  }
+  const btnConfirmDeleteChat = document.getElementById("btn-confirm-delete-chat");
+  if (btnConfirmDeleteChat) {
+    btnConfirmDeleteChat.addEventListener("click", () => confirmDeleteCurrentChat());
+  }
+  const btnCancelDeleteChat = document.getElementById("btn-cancel-delete-chat");
+  const btnCloseDeleteChat = document.getElementById("btn-close-delete-chat-modal");
+  [btnCancelDeleteChat, btnCloseDeleteChat].forEach(b => {
+    if (b) b.addEventListener("click", () => {
+      const modal = document.getElementById("modal-delete-chat");
+      if (modal) modal.style.display = "none";
+    });
+  });
+
+  // Customize Prompt button
+  const btnCustomizePrompt = document.getElementById("btn-customize-prompt");
+  if (btnCustomizePrompt) {
+    btnCustomizePrompt.addEventListener("click", () => {
+      const navBtn = document.getElementById("nav-behavior-btn");
+      if (navBtn) navBtn.click();
+    });
+  }
+
+  // 1. Start New Session Button (Scoped distinct session reset)
   const btnNewSession = document.getElementById("btn-global-new-session");
   if (btnNewSession) {
-    btnNewSession.addEventListener("click", async () => {
-      try {
-        const res = await fetch(`/api/v1/students/${currentStudentId}/sessions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ student_id: currentStudentId, mode: "coach" })
-        });
-        if (res.ok) {
-          const session = await res.json();
-          activeSessionId = session.session_id;
-          showToast("New Learning Session started! Profile & history preserved.");
-          await loadActiveSession();
-          await loadStudents();
-        }
-      } catch (e) {
-        showToast("Error starting new session", true);
-      }
-    });
+    btnNewSession.addEventListener("click", startNewSession);
   }
 
   // 1b. Reset Current Session Button (Part 23)
@@ -3450,12 +3738,20 @@ function switchWorkspace(section) {
 // -------------------------------------------------------------
 let activeSubjectId = 1;
 let currentStudyTopic = null;
+let activeStudySessionId = localStorage.getItem("mizo_study_session_id") || ("study_session_" + Date.now());
+localStorage.setItem("mizo_study_session_id", activeStudySessionId);
 
 async function loadStudyWorkspace() {
+  if (!activeStudySessionId) {
+    activeStudySessionId = localStorage.getItem("mizo_study_session_id") || ("study_session_" + Date.now());
+    localStorage.setItem("mizo_study_session_id", activeStudySessionId);
+  }
   await Promise.all([
     loadStudySubjects(),
-    loadStudyProgress()
+    loadStudyProgress(),
+    loadStudyDocuments()
   ]);
+  await loadStudyHistory();
 }
 
 async function loadStudySubjects() {
@@ -3474,6 +3770,33 @@ async function loadStudySubjects() {
     }
   } catch (e) {
     console.warn("Failed to load study subjects:", e);
+  }
+}
+
+async function loadStudyDocuments() {
+  const docsList = document.getElementById("study-docs-list");
+  if (!docsList || !activeSubjectId) return;
+  try {
+    const res = await fetch(`/api/v1/study/documents?subject_id=${activeSubjectId}`);
+    if (!res.ok) return;
+    const docs = await res.json();
+    if (!docs || docs.length === 0) {
+      docsList.innerHTML = `<span class="text-muted" style="font-size:0.75rem;">No documents uploaded yet.</span>`;
+      return;
+    }
+    docsList.innerHTML = docs.map(d => `
+      <div class="study-doc-badge" data-doc-id="${d.id}" style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:4px 8px; font-size:0.75rem; color:var(--text-light); cursor:pointer;">
+        <span>📄 ${escapeHtml(d.filename)}</span>
+        <span class="text-muted" style="font-size:0.7rem;">${d.page_count ? d.page_count + ' pgs' : ''}</span>
+      </div>
+    `).join("");
+    docsList.querySelectorAll(".study-doc-badge").forEach(el => {
+      el.addEventListener("click", () => {
+        showToast(`Document selected: ${el.querySelector("span").textContent}`);
+      });
+    });
+  } catch (e) {
+    console.warn("Failed to load study documents:", e);
   }
 }
 
@@ -3501,14 +3824,27 @@ async function loadSubjectSyllabus(subId) {
           <div style="font-weight:600; font-size:0.82rem; color:var(--text-accent); margin-bottom:6px;">
             Unit ${unit.unit_order || (uIdx + 1)}: ${escapeHtml(unit.title)}
           </div>
-          <div style="display:flex; flex-direction:column; gap:4px; padding-left:8px;">
+          <div style="display:flex; flex-direction:column; gap:6px; padding-left:8px;">
       `;
       (unit.topics || []).forEach(t => {
-        const isCurrent = currentStudyTopic && currentStudyTopic.toLowerCase() === t.title.toLowerCase();
+        const topicTitle = t.title || t.topic_name || "Topic";
+        const isCurrent = currentStudyTopic && currentStudyTopic.toLowerCase() === topicTitle.toLowerCase();
+        const subtopics = t.subtopics || [];
+        let subtopicsHtml = "";
+        if (subtopics.length > 0) {
+          subtopicsHtml = `
+            <div class="syllabus-subtopic-list" style="padding-left:14px; margin-top:3px; display:flex; flex-direction:column; gap:2px; font-size:0.75rem; color:var(--text-muted);">
+              ${subtopics.map(st => `<span>• ${escapeHtml(st)}</span>`).join("")}
+            </div>
+          `;
+        }
         html += `
-          <button class="syllabus-topic-item ${isCurrent ? 'active' : ''}" data-topic-title="${escapeHtml(t.title)}" style="text-align:left; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:6px 10px; font-size:0.8rem; cursor:pointer; color:var(--text-light); transition:all 0.2s ease;">
-            📘 ${escapeHtml(t.title)}
-          </button>
+          <div style="display:flex; flex-direction:column;">
+            <button class="syllabus-topic-item ${isCurrent ? 'active' : ''}" data-topic-title="${escapeHtml(topicTitle)}" style="text-align:left; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:6px 10px; font-size:0.8rem; cursor:pointer; color:var(--text-light); transition:all 0.2s ease;">
+              📘 ${escapeHtml(topicTitle)}
+            </button>
+            ${subtopicsHtml}
+          </div>
         `;
       });
       html += `</div></div>`;
@@ -3550,14 +3886,14 @@ async function selectStudyTopic(topicTitle) {
 
 async function loadStudyProgress() {
   const container = document.getElementById("study-progress-container");
-  if (!container) return;
+  if (!container || !activeSubjectId) return;
 
   try {
     const res = await fetch(`/api/v1/subjects/${activeSubjectId}/progress?student_id=${currentStudentId}`);
     if (!res.ok) return;
     const prog = await res.json();
 
-    const weakTopics = (prog.weak_topics_json ? JSON.parse(prog.weak_topics_json) : []) || [];
+    const weakTopics = prog.weak_topics || (prog.weak_topics_json ? JSON.parse(prog.weak_topics_json) : []) || [];
     let html = `
       <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
         <span>Subject Mastery:</span>
@@ -3607,7 +3943,6 @@ function appendStudyMessage(role, text) {
     </div>
   `;
 
-  // Remove placeholder if present
   if (container.querySelector(".text-muted")) {
     container.innerHTML = "";
   }
@@ -3616,16 +3951,43 @@ function appendStudyMessage(role, text) {
   container.scrollTop = container.scrollHeight;
 }
 
+async function loadStudyHistory() {
+  const container = document.getElementById("study-messages-container");
+  if (!container || !activeStudySessionId) return;
+
+  try {
+    const res = await fetch(`/api/v1/study/history?session_id=${activeStudySessionId}&student_id=${currentStudentId}`);
+    if (res.ok) {
+      const data = await res.json();
+      const messages = data.messages || [];
+      if (messages.length > 0) {
+        container.innerHTML = "";
+        messages.forEach(m => {
+          appendStudyMessage(m.role, m.content);
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("Could not load study history:", e);
+  }
+}
+
 async function sendStudyMessageDirect(msg) {
   if (!msg) return;
+  if (!activeStudySessionId) {
+    activeStudySessionId = localStorage.getItem("mizo_study_session_id") || ("study_session_" + Date.now());
+    localStorage.setItem("mizo_study_session_id", activeStudySessionId);
+  }
   try {
-    const res = await fetch("/api/v1/esp32/chat", {
+    const res = await fetch("/api/v1/study/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: msg,
         student_id: currentStudentId,
-        session_id: activeSessionId,
+        session_id: activeStudySessionId,
+        subject_id: activeSubjectId,
+        topic: currentStudyTopic,
         mode: "tutor",
         is_typed_text: true
       })
@@ -3634,7 +3996,7 @@ async function sendStudyMessageDirect(msg) {
     if (data.response) {
       appendStudyMessage("mizo", data.response);
     }
-    loadStudyProgress();
+    await loadStudyProgress();
   } catch (err) {
     console.error("Study chat error:", err);
   }
@@ -3681,7 +4043,12 @@ function setupStudySectionEventListeners() {
   if (clearSessionBtn) {
     clearSessionBtn.addEventListener("click", async () => {
       try {
-        await fetch(`/api/v1/subjects/session/reset?student_id=${currentStudentId}`, { method: "POST" });
+        const res = await fetch(`/api/v1/study/session/new?student_id=${currentStudentId}`, { method: "POST" });
+        const data = await res.json();
+        if (data.session_id) {
+          activeStudySessionId = data.session_id;
+          localStorage.setItem("mizo_study_session_id", activeStudySessionId);
+        }
         const container = document.getElementById("study-messages-container");
         if (container) {
           container.innerHTML = `<div class="text-muted" style="text-align:center; padding:30px;">📚 Fresh study session started! Ask any concept from your syllabus.</div>`;
@@ -3703,6 +4070,7 @@ function setupStudySectionEventListeners() {
       if (badge && opt) badge.textContent = `Subject: ${opt.text}`;
       await loadSubjectSyllabus(activeSubjectId);
       await loadStudyProgress();
+      await loadStudyDocuments();
     });
   }
 
@@ -3720,41 +4088,31 @@ function setupStudySectionEventListeners() {
       if (statusEl) statusEl.innerHTML = `<span style="color:#818cf8;">⏳ Uploading and indexing ${escapeHtml(file.name)}...</span>`;
 
       try {
-        if (file.name.endsWith(".json")) {
-          const reader = new FileReader();
-          reader.onload = async (evt) => {
-            try {
-              const syllabusJson = JSON.parse(evt.target.result);
-              const res = await fetch("/api/v1/subjects/load", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(syllabusJson)
-              });
-              if (res.ok) {
-                if (statusEl) statusEl.innerHTML = `<span style="color:#34d399;">✓ Syllabus loaded successfully!</span>`;
-                showToast("Syllabus loaded successfully!");
-                await loadStudyWorkspace();
-              } else {
-                throw new Error("Failed to load syllabus JSON");
-              }
-            } catch (err) {
-              if (statusEl) statusEl.innerHTML = `<span style="color:#f43f5e;">Upload failed: ${err.message}</span>`;
-            }
-          };
-          reader.readAsText(file);
-        } else {
-          const formData = new FormData();
-          formData.append("file", file);
-          const res = await fetch("/api/v1/knowledge/upload", {
-            method: "POST",
-            body: formData
-          });
-          if (res.ok) {
-            if (statusEl) statusEl.innerHTML = `<span style="color:#34d399;">✓ Study document uploaded & indexed!</span>`;
-            showToast("Document indexed for study agent!");
-          } else {
-            throw new Error("Upload failed");
+        const formData = new FormData();
+        formData.append("file", file);
+        if (activeSubjectId) {
+          formData.append("subject_id", activeSubjectId);
+        }
+        formData.append("student_id", currentStudentId);
+
+        const res = await fetch(`/api/v1/study/upload`, {
+          method: "POST",
+          body: formData
+        });
+        const result = await res.json();
+        if (res.ok) {
+          const count = result.topics_extracted || 0;
+          if (statusEl) {
+            statusEl.innerHTML = `<span style="color:#34d399;">✓ Indexed ${count} topics from ${escapeHtml(file.name)}!</span>`;
           }
+          showToast(`Indexed ${count} topics successfully!`);
+          await loadSubjectSyllabus(activeSubjectId);
+          await loadStudyProgress();
+          await loadStudyDocuments();
+        } else {
+          const errMsg = result.detail || "Upload failed";
+          if (statusEl) statusEl.innerHTML = `<span style="color:#f43f5e;">⚠️ ${escapeHtml(errMsg)}</span>`;
+          showToast(errMsg, true);
         }
       } catch (err) {
         if (statusEl) statusEl.innerHTML = `<span style="color:#f43f5e;">Error uploading material</span>`;
@@ -4143,4 +4501,256 @@ async function checkESP32HardwareStatus() {
     // Silent catch for background state sync
   }
 }
+
+// -------------------------------------------------------------
+// New Session, New Chat, Persistent Memory & Chat Lifecycle
+// -------------------------------------------------------------
+async function startNewSession() {
+  try {
+    const res = await fetch(`/api/v1/students/${currentStudentId}/sessions/reset-current`, {
+      method: "POST"
+    });
+    if (res.ok) {
+      const data = await res.json();
+      activeSessionId = data.session_id;
+      sessionStorage.setItem("mizo_active_session_id", activeSessionId);
+      _lastConversationSig = "";
+
+      const chatBox = document.getElementById("chat-messages-container");
+      if (chatBox) {
+        chatBox.innerHTML = `
+          <div class="text-muted" style="text-align:center; padding:40px;" id="chat-idle-placeholder">
+            💬 Current chat is clean and ready.<br>
+            <small style="color:var(--text-dim); margin-top:8px; display:inline-block;">Say <strong>"Hey Mizo"</strong> or type a message below to start chatting.</small>
+          </div>
+        `;
+      }
+      await loadActiveSession();
+      await loadConversations();
+      await loadHistoricalProgress();
+      showToast("⚡ New Session started! Metrics reset, profile & memories preserved.");
+    } else {
+      showToast("Error resetting current session", true);
+    }
+  } catch (err) {
+    console.error("startNewSession error:", err);
+    showToast("Network error resetting session", true);
+  }
+}
+
+async function startNewChat() {
+  try {
+    // Immediately clear displayed message list for instant, clean visual feedback
+    const chatBox = document.getElementById("chat-messages-container");
+    if (chatBox) {
+      chatBox.innerHTML = `
+        <div class="text-muted" style="text-align:center; padding:40px;" id="chat-idle-placeholder">
+          💬 Current chat is clean and ready.<br>
+          <small style="color:var(--text-dim); margin-top:8px; display:inline-block;">Say <strong>"Hey Mizo"</strong> or type a message below to start chatting.</small>
+        </div>
+      `;
+    }
+    const res = await fetch("/api/v1/conversations/new-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ student_id: currentStudentId, mode: "coach" })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      activeSessionId = data.session_id;
+      sessionStorage.setItem("mizo_active_session_id", activeSessionId);
+      _lastConversationSig = "";
+      await loadActiveSession();
+      await loadConversations();
+      showToast("✨ New Chat started! Fresh conversational context.");
+    } else {
+      showToast("Failed to start new chat", true);
+    }
+  } catch (err) {
+    console.error("startNewChat error:", err);
+    showToast("Network error starting new chat", true);
+  }
+}
+
+async function openSaveMemoryModal() {
+  const modal = document.getElementById("modal-save-memory");
+  const contentInput = document.getElementById("memory-content-input");
+  const categorySelect = document.getElementById("memory-category-select");
+  if (!modal || !contentInput) return;
+
+  contentInput.value = "Extracting candidate memory from conversation...";
+  contentInput.placeholder = "Type a fact, preference, or goal to remember (e.g. Prefers step-by-step explanations)...";
+  modal.style.display = "flex";
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+  try {
+    const res = await fetch(`/api/v1/students/${currentStudentId}/memories/candidate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: activeSessionId }),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      const data = await res.json();
+      contentInput.value = data.candidate_memory || "";
+      if (categorySelect && data.category) {
+        categorySelect.value = data.category;
+      }
+    } else {
+      contentInput.value = "";
+    }
+  } catch (err) {
+    clearTimeout(timeoutId);
+    contentInput.value = "";
+  }
+}
+
+async function confirmSaveMemory() {
+  const contentInput = document.getElementById("memory-content-input");
+  const categorySelect = document.getElementById("memory-category-select");
+  const modal = document.getElementById("modal-save-memory");
+  const text = (contentInput ? contentInput.value : "").trim();
+  const cat = categorySelect ? categorySelect.value : "general";
+
+  if (!text) {
+    showToast("Please enter memory content to save", true);
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/v1/students/${currentStudentId}/memories`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        memory_text: text,
+        category: cat,
+        session_id: activeSessionId
+      })
+    });
+    if (res.ok) {
+      showToast("✓ Memory saved to persistent memory!");
+      if (modal) modal.style.display = "none";
+      await updateSavedMemoriesCount();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast(`Error saving memory: ${err.detail || "Server error"}`, true);
+    }
+  } catch (err) {
+    console.error("confirmSaveMemory error:", err);
+    showToast("Network error saving memory", true);
+  }
+}
+
+async function updateSavedMemoriesCount() {
+  const countEl = document.getElementById("saved-memories-count");
+  if (!countEl) return;
+  try {
+    const res = await fetch(`/api/v1/students/${currentStudentId}/memories`);
+    if (res.ok) {
+      const mems = await res.json();
+      countEl.textContent = mems.length;
+    }
+  } catch (err) {}
+}
+
+async function openManageMemoriesModal() {
+  const modal = document.getElementById("modal-manage-memories");
+  const listEl = document.getElementById("saved-memories-list");
+  if (!modal || !listEl) return;
+
+  listEl.innerHTML = `<div class="text-muted" style="text-align:center; padding:15px;">Loading saved memories...</div>`;
+  modal.style.display = "flex";
+
+  try {
+    const res = await fetch(`/api/v1/students/${currentStudentId}/memories`);
+    if (res.ok) {
+      const mems = await res.json();
+      if (mems.length === 0) {
+        listEl.innerHTML = `<div class="text-muted" style="text-align:center; padding:20px;">No persistent memories saved yet. Click "Save to Memory" in any chat to save a useful preference or fact.</div>`;
+        return;
+      }
+      listEl.innerHTML = mems.map(m => `
+        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px; display:flex; justify-content:space-between; align-items:center; gap:10px;">
+          <div style="flex:1;">
+            <div style="display:flex; gap:8px; align-items:center; margin-bottom:4px;">
+              <span class="badge badge-accent" style="font-size:0.7rem; text-transform:uppercase;">${escapeHtml(m.category || 'general')}</span>
+              <small class="text-muted">${new Date(m.created_at).toLocaleDateString()}</small>
+            </div>
+            <div style="font-size:0.9rem; color:var(--text-primary); line-height:1.4;">${escapeHtml(m.memory_text)}</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="deleteSavedMemory(${m.id})" style="color:#f43f5e; padding:4px 8px; font-size:0.75rem;" title="Delete this memory">
+            🗑️
+          </button>
+        </div>
+      `).join("");
+    }
+  } catch (err) {
+    listEl.innerHTML = `<div style="color:#f43f5e; padding:15px; text-align:center;">Failed to load memories.</div>`;
+  }
+}
+
+async function deleteSavedMemory(memoryId) {
+  if (!confirm("Delete this saved memory?")) return;
+  try {
+    const res = await fetch(`/api/v1/students/${currentStudentId}/memories/${memoryId}`, {
+      method: "DELETE"
+    });
+    if (res.ok) {
+      showToast("Memory deleted");
+      await updateSavedMemoriesCount();
+      await openManageMemoriesModal();
+    } else {
+      showToast("Failed to delete memory", true);
+    }
+  } catch (err) {
+    showToast("Error deleting memory", true);
+  }
+}
+
+async function confirmDeleteCurrentChat() {
+  const modal = document.getElementById("modal-delete-chat");
+  if (!activeSessionId) {
+    showToast("No active chat to delete", true);
+    if (modal) modal.style.display = "none";
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/v1/conversations/chats/${activeSessionId}?student_id=${currentStudentId}`, {
+      method: "DELETE"
+    });
+    if (res.ok) {
+      if (modal) modal.style.display = "none";
+      showToast("🗑️ Chat deleted. Starting fresh conversation...");
+      sessionStorage.removeItem("mizo_active_session_id");
+      await startNewChat();
+    } else {
+      showToast("Error deleting chat", true);
+    }
+  } catch (err) {
+    console.error("confirmDeleteCurrentChat error:", err);
+    showToast("Network error deleting chat", true);
+  }
+}
+
+// Export lifecycle functions to global scope
+window.startNewChat = startNewChat;
+window.startNewSession = startNewSession;
+window.openSaveMemoryModal = openSaveMemoryModal;
+window.confirmSaveMemory = confirmSaveMemory;
+window.updateSavedMemoriesCount = updateSavedMemoriesCount;
+window.openManageMemoriesModal = openManageMemoriesModal;
+window.deleteSavedMemory = deleteSavedMemory;
+window.confirmDeleteCurrentChat = confirmDeleteCurrentChat;
+
+// Initial update of saved memories count on page load
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", updateSavedMemoriesCount);
+} else {
+  updateSavedMemoriesCount();
+}
+
 

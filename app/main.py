@@ -18,6 +18,7 @@ from app.api.speech import router as speech_router
 from app.api.devices import router as devices_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.laptop_audio import router as audio_router
+from app.api.study import router as study_router
 from app.services.llm_service import llm_service
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -103,6 +104,7 @@ def create_app() -> FastAPI:
     app.include_router(devices_router)
     app.include_router(diagnostics_router)
     app.include_router(audio_router)
+    app.include_router(study_router)
 
     # Mount Static Admin Dashboard
     if STATIC_DIR.exists():

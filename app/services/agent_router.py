@@ -92,7 +92,10 @@ class AgentRouter:
         r"\bchoose subject\b",
         r"\bstudy section\b",
         r"\bacademic tutor\b",
-        r"\bsubject tutor\b"
+        r"\bsubject tutor\b",
+        r"\bcontinue(?: from where you stopped)?\b",
+        r"\bteach me more\b",
+        r"\bcontinue lesson\b"
     ]
 
     # 4. Explicit Normal Chat Patterns

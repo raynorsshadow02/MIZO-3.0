@@ -320,6 +320,7 @@ class SyllabusTopicCreate(BaseModel):
     content: str
     summary: Optional[str] = ""
     simple_explanation: Optional[str] = ""
+    subtopics: Optional[List[str]] = []
     examples: Optional[List[str]] = []
     key_terms: Optional[List[Dict[str, str]]] = []
     sample_questions: Optional[List[Dict[str, Any]]] = []
@@ -330,13 +331,16 @@ class SyllabusTopicResponse(BaseModel):
     id: int
     unit_id: int
     topic_name: str
+    title: Optional[str] = ""
     summary: Optional[str] = ""
     content: str
     simple_explanation: Optional[str] = ""
+    subtopics: List[str] = []
     examples: List[str] = []
     key_terms: List[Dict[str, str]] = []
     sample_questions: List[Dict[str, Any]] = []
     order_index: int = 0
+    source_document_id: Optional[int] = None
 
 
 class SyllabusUnitCreate(BaseModel):
@@ -372,6 +376,9 @@ class StudentSubjectProgressResponse(BaseModel):
     weak_topics: List[str] = []
     revision_topics: List[str] = []
     questions_asked: int = 0
+    mastery_score: int = 0
+    total_topics: Optional[int] = 0
+    completed_count: Optional[int] = 0
     updated_at: str
 
 
@@ -480,6 +487,48 @@ class ESP32ManualActivateResponse(BaseModel):
     voice_state: str
     message: str
     timeout_seconds: float
+
+
+# -------------------------------------------------------------
+# Memory & Chat Lifecycle Models
+# -------------------------------------------------------------
+class MemoryCreate(BaseModel):
+    memory_text: str
+    category: Optional[str] = "general"
+    session_id: Optional[str] = None
+
+
+class MemoryResponse(BaseModel):
+    id: int
+    student_id: int
+    session_id: Optional[str] = None
+    memory_text: str
+    category: str = "general"
+    created_at: str
+
+
+class CandidateMemoryRequest(BaseModel):
+    session_id: Optional[str] = None
+    message_text: Optional[str] = None
+
+
+class CandidateMemoryResponse(BaseModel):
+    candidate_memory: str
+    category: str = "general"
+    source_message_count: int = 0
+
+
+class NewChatRequest(BaseModel):
+    student_id: Optional[int] = None
+    mode: Optional[str] = "coach"
+
+
+class DeleteChatResponse(BaseModel):
+    success: bool
+    deleted_session_id: str
+    active_session_id: Optional[str] = None
+    message: str
+
 
 
 
