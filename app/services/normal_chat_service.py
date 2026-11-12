@@ -134,15 +134,8 @@ class NormalChatService:
             reply_text = e.user_message
             provider_used = f"error ({e.category})"
         except Exception as e:
-            # Fallback natural responses
-            norm = user_text.lower()
-            if "one piece" in norm or "anime" in norm:
-                reply_text = "I love talking about anime! Who is your favorite character in One Piece?"
-            elif "how are you" in norm:
-                reply_text = f"I'm doing well, {st_name}! How has your day been going?"
-            else:
-                reply_text = f"That's interesting, {st_name}! Tell me more about that."
-            provider_used = "system"
+            reply_text = "I encountered a temporary connection issue reaching the AI service. Please check your internet connection or try again."
+            provider_used = "error (timeout_or_network)"
 
         # Record metrics for conversation practice
         personalization_service.record_interaction_metrics(

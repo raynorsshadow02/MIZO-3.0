@@ -30,11 +30,13 @@ class STTService:
                 self._local_model = False
         return self._local_model if self._local_model is not False else None
 
-    async def transcribe_audio_with_metadata(self, file_path: Path) -> dict:
+    async def transcribe_audio_with_metadata(self, file_path: Path, language: Optional[str] = None) -> dict:
         """
         Transcribe an audio file using Groq Whisper, OpenAI Whisper, or local model,
-        preserving real audio duration, segment timestamps, and word-level timing where available.
+        preserving real audio duration, segment timestamps, language, and confidence metrics where available.
         """
+        target_lang = language or getattr(settings, "STT_LANGUAGE", "en") or "en"
+
         # Check if transcribe_audio_file has been mocked or overridden (e.g. in test suites)
         transcribe_fn = getattr(self, "transcribe_audio_file", None)
         if transcribe_fn and type(transcribe_fn).__name__ in ("AsyncMock", "MagicMock", "Mock"):
@@ -46,7 +48,7 @@ class STTService:
                 "duration_seconds": 0.0,
                 "segments": [],
                 "words": [],
-                "language": "en"
+                "language": target_lang
             }
 
         db_conf = get_db_settings()
@@ -88,7 +90,8 @@ class STTService:
                         data = {
                             "model": settings.GROQ_WHISPER_MODEL or "whisper-large-v3",
                             "temperature": 0.0,
-                            "response_format": "verbose_json"
+                            "response_format": "verbose_json",
+                            "language": target_lang
                         }
                         headers = {
                             "Authorization": f"Bearer {groq_api_key}"
@@ -105,13 +108,26 @@ class STTService:
                             duration = float(res_json.get("duration") or 0.0) or physical_duration
                             segments = res_json.get("segments") or []
                             words = res_json.get("words") or []
-                            language = res_json.get("language")
+                            detected_language = res_json.get("language") or target_lang
+
+                            avg_logprob = None
+                            no_speech_prob = None
+                            if segments:
+                                lps = [s.get("avg_logprob") for s in segments if s.get("avg_logprob") is not None]
+                                if lps:
+                                    avg_logprob = sum(lps) / len(lps)
+                                nsps = [s.get("no_speech_prob") for s in segments if s.get("no_speech_prob") is not None]
+                                if nsps:
+                                    no_speech_prob = max(nsps)
+
                             return {
                                 "text": text,
                                 "duration_seconds": duration,
                                 "segments": segments,
                                 "words": words,
-                                "language": language
+                                "language": detected_language,
+                                "avg_logprob": avg_logprob,
+                                "no_speech_prob": no_speech_prob
                             }
                         else:
                             print(f"[STT] Groq Whisper API error {response.status_code}: {response.text}")
@@ -128,7 +144,8 @@ class STTService:
                         }
                         data = {
                             "model": settings.OPENAI_WHISPER_MODEL or "whisper-1",
-                            "response_format": "verbose_json"
+                            "response_format": "verbose_json",
+                            "language": target_lang
                         }
                         headers = {
                             "Authorization": f"Bearer {openai_api_key}"
@@ -145,13 +162,26 @@ class STTService:
                             duration = float(res_json.get("duration") or 0.0) or physical_duration
                             segments = res_json.get("segments") or []
                             words = res_json.get("words") or []
-                            language = res_json.get("language")
+                            detected_language = res_json.get("language") or target_lang
+
+                            avg_logprob = None
+                            no_speech_prob = None
+                            if segments:
+                                lps = [s.get("avg_logprob") for s in segments if s.get("avg_logprob") is not None]
+                                if lps:
+                                    avg_logprob = sum(lps) / len(lps)
+                                nsps = [s.get("no_speech_prob") for s in segments if s.get("no_speech_prob") is not None]
+                                if nsps:
+                                    no_speech_prob = max(nsps)
+
                             return {
                                 "text": text,
                                 "duration_seconds": duration,
                                 "segments": segments,
                                 "words": words,
-                                "language": language
+                                "language": detected_language,
+                                "avg_logprob": avg_logprob,
+                                "no_speech_prob": no_speech_prob
                             }
                         else:
                             print(f"[STT] OpenAI Whisper API error {response.status_code}: {response.text}")
@@ -162,22 +192,25 @@ class STTService:
         local_model = self._get_local_whisper()
         if local_model:
             try:
-                segments_iter, info = local_model.transcribe(str(file_path), beam_size=1)
+                segments_iter, info = local_model.transcribe(str(file_path), beam_size=1, language=target_lang)
                 segments_list = []
                 for s in segments_iter:
                     segments_list.append({
                         "start": getattr(s, "start", 0.0),
                         "end": getattr(s, "end", 0.0),
-                        "text": getattr(s, "text", "")
+                        "text": getattr(s, "text", ""),
+                        "avg_logprob": getattr(s, "avg_logprob", None),
+                        "no_speech_prob": getattr(s, "no_speech_prob", None)
                     })
                 text = " ".join([seg["text"] for seg in segments_list]).strip()
                 duration = getattr(info, "duration", physical_duration) or physical_duration
+                detected_lang = getattr(info, "language", target_lang) or target_lang
                 return {
                     "text": text,
                     "duration_seconds": duration,
                     "segments": segments_list,
                     "words": [],
-                    "language": getattr(info, "language", "en")
+                    "language": detected_lang
                 }
             except Exception as e:
                 print(f"[STT] Local Faster-Whisper failed: {e}")

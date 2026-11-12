@@ -1,6 +1,9 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Dict, Any, Optional
 from app.db.database import (
+    get_connection,
+    get_student,
+    create_student,
     update_student,
     create_session,
     get_active_session,
@@ -13,10 +16,15 @@ from app.db.database import (
     get_assessment_by_id,
     get_student_historical_progress,
     reset_current_session,
+    save_durable_memory,
+    get_student_memories,
+    delete_durable_memory,
     PROTOTYPE_STUDENT_ID,
     get_prototype_student,
+    _parse_student_dict,
 )
 from app.services.personalization_service import personalization_service
+from app.services.memory_service import MizoMemoryManager
 from app.db.models import (
     StudentCreate,
     StudentUpdate,
@@ -25,7 +33,11 @@ from app.db.models import (
     SessionResponse,
     StudentMistake,
     AssessmentResponse,
-    HistoricalProgressResponse
+    HistoricalProgressResponse,
+    MemoryCreate,
+    MemoryResponse,
+    CandidateMemoryRequest,
+    CandidateMemoryResponse,
 )
 
 router = APIRouter(prefix="/api/v1/students", tags=["Student Management"])
@@ -41,28 +53,41 @@ def _primary_student_or_503() -> Dict[str, Any]:
 @router.get("", response_model=List[StudentResponse])
 async def list_students():
     """Retrieve all student profiles."""
-    return [_primary_student_or_503()]
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM students ORDER BY id ASC")
+    rows = cursor.fetchall()
+    conn.close()
+    if not rows:
+        return [_primary_student_or_503()]
+    return [_parse_student_dict(dict(r)) for r in rows]
 
 
 @router.get("/{student_id}", response_model=StudentResponse)
 async def get_student_profile(student_id: int):
     """Retrieve a single student profile and learning metrics."""
-    return _primary_student_or_503()
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    return student
 
 
 @router.post("", response_model=StudentResponse)
 async def add_student(payload: StudentCreate):
-    """Student creation is disabled for the single-learner prototype."""
-    raise HTTPException(status_code=403, detail="Mizo prototype uses the existing Student #1 profile")
+    """Create a new student profile."""
+    new_student = create_student(payload.model_dump())
+    return new_student
 
 
 @router.put("/{student_id}", response_model=StudentResponse)
 async def edit_student(student_id: int, payload: StudentUpdate):
-    """Update the sole prototype learner profile."""
-    _primary_student_or_503()
-    updated = update_student(PROTOTYPE_STUDENT_ID, payload.model_dump(exclude_unset=True))
+    """Update a learner profile."""
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    updated = update_student(student_id, payload.model_dump(exclude_unset=True))
     if not updated:
-        raise HTTPException(status_code=404, detail="Student not found")
+        raise HTTPException(status_code=404, detail="Student update failed")
     return updated
 
 
@@ -75,8 +100,10 @@ async def restart_student_onboarding(student_id: int):
     - Resets active profile state back to ask_name.
     - Preserves all past sessions, conversation dialogues, and assessments.
     """
-    _primary_student_or_503()
-    return restart_onboarding(PROTOTYPE_STUDENT_ID)
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    return restart_onboarding(student_id)
 
 
 @router.delete("/{student_id}", response_model=StudentResponse)
@@ -87,8 +114,10 @@ async def delete_student_learner_data(student_id: int):
     - Permanently deletes student profile, conversations, assessments, mistakes, and sessions.
     - Strictly preserves system_settings, .env, and device API keys.
     """
-    _primary_student_or_503()
-    return delete_learner_data(PROTOTYPE_STUDENT_ID)
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    return delete_learner_data(student_id)
 
 
 @router.post("/{student_id}/complete-text-onboarding", response_model=StudentResponse)
@@ -97,15 +126,19 @@ async def complete_text_only_onboarding(student_id: int):
     Completes onboarding without audio speaking assessment when microphone is unavailable.
     Leaves speaking assessment pending and does not invent fake baseline scores.
     """
-    _primary_student_or_503()
-    return personalization_service.complete_text_onboarding_without_audio(PROTOTYPE_STUDENT_ID)
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    return personalization_service.complete_text_onboarding_without_audio(student_id)
 
 
 @router.post("/{student_id}/reset", response_model=StudentResponse)
 async def reset_student(student_id: int):
     """Resets student profile, zeroes metrics, and sets onboarding to fresh start (Factory / Admin Reset)."""
-    _primary_student_or_503()
-    return reset_student_to_fresh(PROTOTYPE_STUDENT_ID)
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    return reset_student_to_fresh(student_id)
 
 
 # -------------------------------------------------------------
@@ -118,17 +151,21 @@ async def start_new_session(student_id: int, payload: Optional[SessionCreate] = 
     Creates a new learning session for the student.
     Current session metrics are initialized to ZERO without deleting historical progress.
     """
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
     mode = payload.mode if payload else "coach"
-    _primary_student_or_503()
-    session_data = create_session(student_id=PROTOTYPE_STUDENT_ID, mode=mode)
+    session_data = create_session(student_id=student_id, mode=mode)
     return session_data
 
 
 @router.get("/{student_id}/sessions/active", response_model=SessionResponse)
 async def get_student_active_session(student_id: int, mode: Optional[str] = Query("coach")):
     """Retrieves current active session or starts one if none is active."""
-    _primary_student_or_503()
-    return get_active_session(student_id=PROTOTYPE_STUDENT_ID, default_mode=mode or "coach")
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    return get_active_session(student_id=student_id, default_mode=mode or "coach")
 
 
 # -------------------------------------------------------------
@@ -137,8 +174,10 @@ async def get_student_active_session(student_id: int, mode: Optional[str] = Quer
 @router.get("/{student_id}/mistakes", response_model=List[StudentMistake])
 async def get_student_mistakes_history(student_id: int, limit: int = Query(10)):
     """Retrieves logged mistakes and grammatical errors for the student."""
-    _primary_student_or_503()
-    return get_recent_mistakes(student_id=PROTOTYPE_STUDENT_ID, limit=limit)
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    return get_recent_mistakes(student_id=student_id, limit=limit)
 
 
 # -------------------------------------------------------------
@@ -147,15 +186,17 @@ async def get_student_mistakes_history(student_id: int, limit: int = Query(10)):
 @router.get("/{student_id}/assessments", response_model=List[AssessmentResponse])
 async def get_student_assessments_history(student_id: int, limit: int = Query(20)):
     """Retrieves all past speaking assessment records and reasoning for the student."""
-    _primary_student_or_503()
-    return get_student_assessments(student_id=PROTOTYPE_STUDENT_ID, limit=limit)
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    return get_student_assessments(student_id=student_id, limit=limit)
 
 
 @router.get("/{student_id}/assessments/{assessment_id}", response_model=AssessmentResponse)
 async def get_single_assessment(student_id: int, assessment_id: int):
     """Retrieves a specific speaking assessment record with detailed dimension scores and evidence."""
     assessment = get_assessment_by_id(assessment_id)
-    if not assessment or assessment.get("student_id") != PROTOTYPE_STUDENT_ID:
+    if not assessment or assessment.get("student_id") != student_id:
         raise HTTPException(status_code=404, detail="Assessment record not found")
     return assessment
 
@@ -169,8 +210,10 @@ async def get_learner_historical_progress(student_id: int):
     Retrieves cumulative historical progress calculated strictly from completed assessments.
     Contains full data-source provenance and never outputs fake/default numbers.
     """
-    _primary_student_or_503()
-    return get_student_historical_progress(PROTOTYPE_STUDENT_ID)
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    return get_student_historical_progress(student_id)
 
 
 @router.post("/{student_id}/sessions/reset-current", response_model=SessionResponse)
@@ -179,7 +222,63 @@ async def reset_student_current_session(student_id: int):
     Clears only the active session's metrics and conversation messages.
     Does NOT delete historical progress, learner profile, or completed assessments.
     """
-    _primary_student_or_503()
-    return reset_current_session(student_id=PROTOTYPE_STUDENT_ID)
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    return reset_current_session(student_id=student_id)
 
 
+# -------------------------------------------------------------
+# Persistent Durable Memories Endpoints
+# -------------------------------------------------------------
+@router.get("/{student_id}/memories", response_model=List[MemoryResponse])
+async def get_student_memories_endpoint(student_id: int):
+    """Retrieves all persistent memories saved for this student."""
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    return get_student_memories(student_id)
+
+
+@router.post("/{student_id}/memories", response_model=MemoryResponse)
+async def create_student_memory_endpoint(student_id: int, payload: MemoryCreate):
+    """Saves a confirmed durable memory for this student."""
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    if not payload.memory_text or not payload.memory_text.strip():
+        raise HTTPException(status_code=400, detail="Memory text cannot be empty")
+    return save_durable_memory(
+        student_id=student_id,
+        memory_text=payload.memory_text.strip(),
+        category=payload.category or "general",
+        session_id=payload.session_id
+    )
+
+
+@router.delete("/{student_id}/memories/{memory_id}")
+async def delete_student_memory_endpoint(student_id: int, memory_id: int):
+    """Deletes a specific persistent memory."""
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    ok = delete_durable_memory(memory_id, student_id=student_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Memory not found or does not belong to student")
+    return {"status": "deleted", "memory_id": memory_id}
+
+
+@router.post("/{student_id}/memories/candidate", response_model=CandidateMemoryResponse)
+async def generate_student_candidate_memory(student_id: int, payload: Optional[CandidateMemoryRequest] = None):
+    """Generates a candidate memory from recent dialogue or message for user review."""
+    student = get_student(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student #{student_id} not found")
+    sess_id = payload.session_id if payload else None
+    msg_text = payload.message_text if payload else None
+    cand = MizoMemoryManager.generate_candidate_memory(student_id=student_id, session_id=sess_id, message_text=msg_text)
+    return CandidateMemoryResponse(
+        candidate_memory=cand["candidate_memory"],
+        category=cand["category"],
+        session_id=sess_id
+    )

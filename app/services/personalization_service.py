@@ -126,7 +126,7 @@ class PersonalizationService:
             "i don t understand", "i dont understand", "i do not understand",
             "i don t get it", "i dont get it", "i don t get you", "i dont get you",
             "i don t quite get you", "i dont quite get you", "don t quite get you", "dont quite get you",
-            "explain it", "explain again", "can you explain", "explain to me",
+            "explain again", "explain it again", "explain that again", "can you explain again", "please explain again",
             "i don t know what you mean", "i dont know what you mean",
             "i don t understand what you mean", "i dont understand what you mean",
             "what does that mean", "what does it mean", "what do you mean",
@@ -135,6 +135,10 @@ class PersonalizationService:
         for tr in mild_triggers:
             if tr in norm:
                 return True, "mild"
+
+        # Standalone short requests for explanation without a specific topic
+        if norm in ["can you explain", "explain it", "explain to me", "please explain", "can you explain it"]:
+            return True, "mild"
 
         # Single word expressions of confusion
         if len(words) <= 2 and any(w in words for w in ["what", "huh", "pardon", "confused"]):
@@ -367,7 +371,11 @@ class PersonalizationService:
             r"(?:i have trouble with|trouble in|difficulty with|difficult for me to|hard for me to)\s+([^.,;]+)",
             r"(?:bad at|problem with|struggling to|challenge is|challenges are)\s+([^.,;]+)",
             r"(?:hesitate when|often hesitate|tend to hesitate|hesitation with|stumble when)\s+([^.,;]+)",
-            r"\b(hesitate when speaking|hesitating|hesitation)\b"
+            r"(?:difficulty when|difficulties when|face difficulties|face trouble|trouble when|hard when)\s+([^.,;]+)",
+            r"(?:hard to|difficult to|struggle to)\s+([^.,;]+?(?:speak|communicate|express|find words|talk|convey))",
+            r"(?:nervous when|shy when|fear of|afraid of)\s+([^.,;]+)",
+            r"\b(hesitate when speaking|hesitating|hesitation)\b",
+            r"(?:lack(?: of)? confidence|not confident|low confidence|feel shy|feel nervous|nervousness)(?:\s+(?:when|in|about)\s+[^.,;]+)?"
         ]
         found_weaknesses = []
         for pat in weakness_patterns:
@@ -570,7 +578,7 @@ class PersonalizationService:
             if curr_step in ["ask_problems", "ask_about_user", "ask_goals"] and "learning_goals" not in updates and len(clean_text) > 3:
                 if not student.get("learning_goals") or student.get("learning_goals") in ["Improve communication skills", "Improve speaking fluency and communication"]:
                     updates["learning_goals"] = clean_text
-            elif curr_step in ["ask_weaknesses"] and "weaknesses" not in updates and not student.get("weaknesses") and len(clean_text) > 3:
+            elif curr_step in ["ask_weaknesses", "ask_strengths_weaknesses", "ask_communication"] and "weaknesses" not in updates and not student.get("weaknesses") and len(clean_text) > 3:
                 updates["weaknesses"] = [clean_text]
             elif curr_step in ["ask_self_level"] and "self_reported_level" not in updates and len(clean_text) > 1:
                 updates["self_reported_level"] = "Not sure" if is_skip_or_unsure else clean_text
@@ -585,13 +593,6 @@ class PersonalizationService:
         """
         Determines whether user utterance is a counter-question or off-topic deflection
         rather than answering a direct question.
-        Examples:
-        - "What is your name?"
-        - "Who are you?"
-        - "What is your goal?"
-        - "Can you speak Spanish?"
-        - "Why do you ask?"
-        - "What are you doing?"
         """
         if not text:
             return True
@@ -630,8 +631,6 @@ class PersonalizationService:
         """
         Context-aware validation of user response to current onboarding question.
         Returns: (is_valid: bool, reason: str)
-        Ensures Mikaza waits until it receives an answer relevant to the current question
-        before moving to the next question.
         """
         if not text or not text.strip():
             return False, "empty_or_silence"
@@ -640,7 +639,7 @@ class PersonalizationService:
         lower = clean.lower()
         step = (current_step or "").lower()
 
-        # 1. Any counter-question directed at Mikaza is not an answer to Mikaza's question
+        # 1. Any counter-question directed at Mizo is not an answer to Mizo's question
         if cls.is_counter_question_or_deflection(clean):
             return False, "counter_question"
 
@@ -649,16 +648,13 @@ class PersonalizationService:
             name = cls.extract_name(clean, current_student=student, is_name_step=True)
             if name:
                 return True, "valid_name"
-            # Non-name words or short greetings
             if lower in ["hello", "hi", "hey", "good morning", "good evening", "yes", "no", "okay", "sure", "ready"]:
                 return False, "greeting_not_name"
-            # If user spoke something like "I want to improve my communication", it's a goal, not a name!
             if any(w in lower for w in ["goal", "improve", "english", "speak", "practice", "learn", "study"]):
                 return False, "goal_given_instead_of_name"
             return False, "unclear_name"
 
         elif step in ["ask_goals", "ask_problems"]:
-            # Check if user provided an actual goal or intention
             goal_keywords = [
                 "improve", "learn", "goal", "practice", "speak", "speaking", "communication",
                 "skills", "fluent", "fluency", "english", "interview", "confidence", "accent",
@@ -669,20 +665,19 @@ class PersonalizationService:
             if any(kw in lower for kw in goal_keywords):
                 return True, "valid_goal"
 
-            # Check if user gave an answer with enough descriptive context (>= 3 words) without being deflection
             words = lower.split()
             if len(words) >= 3 and not any(w in lower for w in ["name is", "call me", "i am called", "my name"]):
                 return True, "descriptive_goal"
 
             return False, "unrelated_to_goal"
 
-        elif step in ["ask_weaknesses"]:
+        elif step in ["ask_weaknesses", "ask_strengths_weaknesses", "ask_communication"]:
             weakness_keywords = [
                 "hesitat", "grammar", "vocab", "word", "pronunc", "struggle", "trouble",
                 "difficult", "challenge", "bad", "weak", "stumble", "fear", "shy", "nervous",
                 "confidence", "fluency", "pace", "speed", "accent", "speaking", "sentence",
                 "listen", "not sure", "dont know", "don't know", "no idea", "none", "nothing",
-                "hard to say", "everything", "all of it"
+                "hard to say", "everything", "all of it", "good at", "strength"
             ]
             if any(kw in lower for kw in weakness_keywords):
                 return True, "valid_weakness"
@@ -705,12 +700,16 @@ class PersonalizationService:
     def determine_next_onboarding_state(cls, student: Dict[str, Any], current_step: str) -> str:
         """
         Dynamically and authoritatively calculates the next onboarding state:
-        ONBOARDING_NAME -> ONBOARDING_BACKGROUND -> ONBOARDING_WEAKNESSES -> ENGLISH_ASSESSMENT -> ASSESSMENT_COMPLETE
+        ask_name -> ask_goals -> ask_weaknesses -> ask_self_level -> speech_test_prompt -> completed
         """
         step = (current_step or "").lower()
 
         if student.get("onboarding_completed", False):
             return "completed"
+
+        if student.get("assessment_deferred"):
+            if step in ["speech_test_prompt", "speaking_assessment", "speech_evaluation", "speaking_assessment_intro"]:
+                return "completed"
 
         if step in ["speech_test_prompt", "speaking_assessment", "speech_evaluation", "speaking_assessment_intro"]:
             return "speech_test_prompt"
@@ -719,8 +718,30 @@ class PersonalizationService:
         if not name or name.lower() in ["new learner", "student", "there", "unknown", ""]:
             return "ask_name"
 
+        # Sequential step evaluation: if current step was just completed, advance to next
+        if step in ["ask_name", "new_student", "welcome"]:
+            return "ask_goals"
+
+        if step in ["ask_goals", "ask_problems"]:
+            return "ask_weaknesses"
+
+        if step in ["ask_weaknesses", "ask_strengths_weaknesses", "ask_communication"]:
+            weaknesses = student.get("weaknesses")
+            if not weaknesses:
+                return "ask_weaknesses"
+            return "ask_self_level"
+
+        if step in ["ask_self_level"]:
+            self_level = student.get("self_reported_level")
+            if not self_level or self_level in ["Pending", "Not calibrated", ""]:
+                return "ask_self_level"
+            if student.get("assessment_deferred"):
+                return "completed"
+            return "speech_test_prompt"
+
+        # Missing field checks if resuming from arbitrary/unknown state
         goals = (student.get("learning_goals") or "").strip()
-        if not goals or goals in ["Improve communication skills", ""]:
+        if not goals or goals in ["Improve communication skills", "Improve speaking fluency and communication", ""]:
             return "ask_goals"
 
         weaknesses = student.get("weaknesses")
@@ -728,8 +749,11 @@ class PersonalizationService:
             return "ask_weaknesses"
 
         self_level = student.get("self_reported_level")
-        if not self_level or self_level in ["Pending", ""]:
+        if not self_level or self_level in ["Pending", "Not calibrated", ""]:
             return "ask_self_level"
+
+        if student.get("assessment_deferred"):
+            return "completed"
 
         return "speech_test_prompt"
 
@@ -1015,11 +1039,13 @@ CRITICAL VOICE DELIVERY RULES:
             return "Hi! I'm Mizo. Before we begin, I'd like to get to know you. What's your name?"
         elif s in [cls.STATE_ASK_GOALS, "ask_goals", "ask_problems", "ask_about_user"]:
             return "Tell me a little about yourself—what are you studying or working on, and what are your main goals for improving your English?"
-        elif s in [cls.STATE_ASK_WEAKNESSES, "ask_weaknesses"]:
-            return "What specific challenges or areas in English would you like to improve most, such as grammar, vocabulary, or speaking confidence?"
-        elif s in [cls.STATE_ASSESSMENT_INTRO, "speech_test_prompt", "speaking_assessment", cls.STATE_ASK_SELF_LEVEL, "ask_self_level"]:
+        elif s in [cls.STATE_ASK_WEAKNESSES, "ask_weaknesses", "ask_strengths_weaknesses", "ask_communication"]:
+            return "What are your strengths in English, and what specific difficulties or challenges do you face when speaking English or communicating with others?"
+        elif s in [cls.STATE_ASK_SELF_LEVEL, "ask_self_level"]:
+            return "How would you describe your current English level—beginner, intermediate, advanced, or are you not sure?"
+        elif s in [cls.STATE_ASSESSMENT_INTRO, "speech_test_prompt", "speaking_assessment"]:
             topic = cls.generate_dynamic_assessment_topic(student or {})
-            return f"Now I'd like to understand how you communicate in English. Speak freely for about one to two minutes on this topic: {topic}. Don't worry about mistakes!"
+            return f"Now I'd like to understand how you communicate in English. Speak freely for about one to two minutes on this topic: {topic}, or say 'skip' if you'd like to jump straight into conversation! Don't worry about mistakes."
         return "What would you like to learn or practice today?"
 
     @classmethod
@@ -1029,7 +1055,10 @@ CRITICAL VOICE DELIVERY RULES:
         current_step: str,
         next_step: str,
         user_answer: str,
-        last_question_asked: Optional[str] = None
+        last_question_asked: Optional[str] = None,
+        recent_history: Optional[List[Dict[str, Any]]] = None,
+        assessment_status: Optional[str] = None,
+        transcription_quality: Optional[Dict[str, Any]] = None
     ) -> str:
         """
         Builds structured context for the LLM to generate a natural dynamic acknowledgment
@@ -1055,31 +1084,66 @@ CRITICAL VOICE DELIVERY RULES:
             )
             ack_example = '"Thank you for sharing that!"'
 
+        # Saved learner profile context
+        education = student.get("education") or "Not yet specified"
+        goals = student.get("learning_goals") or "Not yet specified"
+        strengths = ", ".join(student.get("strengths") or []) or "Not yet specified"
+        weaknesses = ", ".join(student.get("weaknesses") or []) or "Not yet specified"
+        level = student.get("self_reported_level") or "Pending"
+
+        status_str = assessment_status or (
+            "deferred" if student.get("assessment_deferred")
+            else ("completed" if student.get("onboarding_completed")
+                  else "active" if next_step in ["speech_test_prompt", "speaking_assessment"]
+                  else "pending")
+        )
+
+        history_section = ""
+        if recent_history:
+            turns = []
+            for h in recent_history[-4:]:
+                r = "Student" if h.get("role") == "user" else "Mizo"
+                c = (h.get("content") or "").strip()
+                if c:
+                    turns.append(f"{r}: {c}")
+            if turns:
+                history_section = "\nRECENT CONVERSATION TURNS:\n" + "\n".join(turns) + "\n"
+
+        quality_note = ""
+        if transcription_quality and transcription_quality.get("note"):
+            quality_note = f"\nTRANSCRIPTION QUALITY SIGNAL: {transcription_quality.get('note')}\n"
+
         return f"""You are Mizo, an empathetic, encouraging AI learning tutor robot leading a voice onboarding conversation.
 {name_note}
 
-Current onboarding question:
+CURRENT ONBOARDING STAGE: {current_step}
+NEXT ONBOARDING STAGE: {next_step}
+ASSESSMENT STATUS: {status_str}
+
+PERSISTENT STUDENT PROFILE:
+- Name: {student_name if is_name_known else 'Unknown'}
+- Education / Background: {education}
+- Goals: {goals}
+- Strengths: {strengths}
+- Weaknesses / Challenges: {weaknesses}
+- Self-Reported Level: {level}
+{history_section}{quality_note}
+Current onboarding question asked:
 {curr_q}
 
-User answer:
+Student's actual message:
 {user_answer}
 
-Next onboarding question:
+Next onboarding question to ask:
 {next_q}
 
-Generate a short, natural conversational response.
-
-Requirements:
-- Acknowledge the user's answer naturally and warmly (e.g., {ack_example}, "That's a great goal to work towards!").
-- Do not repeat the user's answer unnecessarily.
-- Do NOT invent or fabricate any name for the student.
-- Do NOT use a fixed question sequence or canned questions.
-- Ask the next question in the exact same turn.
-- Keep it concise (1 to 2 spoken sentences total).
-- Do not ask multiple future questions.
-- Do not answer on behalf of the user.
-- Strictly avoid repetitive filler phrases like 'Take your time', 'Whenever you're ready', or 'Okay, go ahead'.
-- Output spoken text directly with no markdown, asterisks, or bullet points.
+CONVERSATIONAL REQUIREMENTS:
+1. ANSWER THE STUDENT'S ACTUAL MESSAGE FIRST: Directly acknowledge and validate what the student just said (e.g. {ack_example}, "That sounds exciting!", or thoughtful feedback).
+2. EMPATHY FOR NERVOUSNESS & CONFIDENCE: If the student says they lack confidence, feel nervous, shy, or hesitate when speaking, warmly acknowledge that with genuine encouragement and reassure them that Mizo is a safe, supportive place to practice English. Do not ignore their vulnerability or abruptly change topics without empathetic validation.
+3. PARTIAL ANSWERS: If the student gives a partial answer, acknowledge what they shared with encouragement, then smoothly proceed with the next question.
+4. DO NOT REPEAT QUESTIONS: Do not ask for information already saved in the profile above.
+5. ASK ONE QUESTION AT A TIME: In the exact same turn, transition naturally and ask the next question: '{next_q}'. Then STOP speaking and wait for their answer.
+6. VOICE DELIVERY: Keep it concise (1 to 3 spoken sentences total). Output spoken text directly with no markdown, asterisks, or bullet points. Avoid robotic filler phrases like 'Take your time' or 'Whenever you're ready'.
 """
 
     @classmethod
@@ -1461,8 +1525,7 @@ Output JSON format:
                 messages=[{"role": "user", "content": user_content}],
                 system_prompt=analysis_system_prompt,
                 temperature=0.2,
-                max_tokens=800,
-                provider_override="ollama"
+                max_tokens=800
             )
             # Parse JSON from response
             cleaned_json = llm_res.text.strip()

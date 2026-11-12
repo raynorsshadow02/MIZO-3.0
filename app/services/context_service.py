@@ -67,7 +67,31 @@ TOPIC_CHANGE_PATTERNS = [
     r"\bnew topic\b",
     r"\bswitch topic\b",
     r"\benough about (?:that|this)\b",
-    r"\bby the way[,\s]+can we talk about\b"
+    r"\bby the way[,\s]+can we talk about\b",
+    r"^\s*(?:i want to |let'?s |can we )?(?:move on|proceed|move ahead)\s*[.!?]?$",
+    r"\bmove on from\b",
+    r"\bdifferent topic\b"
+]
+
+MOVE_ON_PATTERNS = [
+    r"^\s*(?:i want to |let'?s |can we )?(?:move on|proceed|move ahead)\s*[.!?]?$"
+]
+
+PROJECT_QUERY_PATTERNS = [
+    r"\b(?:what are my projects|what is my project|tell me about my projects|my projects|what projects am i working on)\b"
+]
+
+TEACH_REQUEST_PATTERNS = [
+    r"^\s*(?:teach me|can you teach me|please teach me|teach me more|start teaching)\b"
+]
+
+COURTESY_PATTERNS = [
+    r"^\s*(?:thank you|thanks|thanks a lot|thank you so much|thx)[.!?]?$",
+    r"^\s*(?:goodbye|bye|see you|good night)[.!?]?$"
+]
+
+GREETING_PATTERNS = [
+    r"^\s*(?:hello|hi|hey|good morning|good afternoon|good evening)[.!?]?$"
 ]
 
 CONTEXT_QUERY_PATTERNS = [
@@ -107,6 +131,11 @@ def detect_conversation_intent(text: str, prev_mizo_question: Optional[str] = No
     - USER_CORRECTION
     - CONTEXT_QUERY
     - MEMORY_QUERY
+    - PROJECTS_QUERY
+    - MOVE_ON_QUERY
+    - TEACH_REQUEST
+    - COURTESY
+    - GREETING
     - CONFUSION
     - CLARIFICATION
     - TOPIC_CHANGE
@@ -136,29 +165,54 @@ def detect_conversation_intent(text: str, prev_mizo_question: Optional[str] = No
         if re.search(pat, norm):
             return "MEMORY_QUERY"
 
-    # 4. Confusion
+    # 4. Project queries ("What are my projects?")
+    for pat in PROJECT_QUERY_PATTERNS:
+        if re.search(pat, norm):
+            return "PROJECTS_QUERY"
+
+    # 5. Ambiguous move on ("move on")
+    for pat in MOVE_ON_PATTERNS:
+        if re.search(pat, norm):
+            return "MOVE_ON_QUERY"
+
+    # 6. Teach request ("teach me")
+    for pat in TEACH_REQUEST_PATTERNS:
+        if re.search(pat, norm):
+            return "TEACH_REQUEST"
+
+    # 7. Courtesy (Thanks, Bye)
+    for pat in COURTESY_PATTERNS:
+        if re.search(pat, norm):
+            return "COURTESY"
+
+    # 8. Greetings (Hello, Hi)
+    for pat in GREETING_PATTERNS:
+        if re.search(pat, norm):
+            return "GREETING"
+
+    # 9. Confusion
     for pat in CONFUSION_PATTERNS:
         if re.search(pat, norm):
             return "CONFUSION"
 
-    # 5. Clarification
+    # 10. Clarification
     for pat in CLARIFICATION_PATTERNS:
         if re.search(pat, norm):
             return "CLARIFICATION"
 
-    # 6. Topic change
+    # 11. Topic change
     for pat in TOPIC_CHANGE_PATTERNS:
         if re.search(pat, norm):
             return "TOPIC_CHANGE"
 
-    # 7. Questions
+    # 12. Questions
     if norm.endswith("?"):
         return "QUESTION"
     for pat in QUESTION_STARTERS:
         if re.search(pat, norm):
             return "QUESTION"
 
-    # 8. Agreement / Disagreement
+    # 13. Agreement / Disagreement
     for pat in AGREEMENT_PATTERNS:
         if re.search(pat, norm):
             return "AGREEMENT"
@@ -166,11 +220,12 @@ def detect_conversation_intent(text: str, prev_mizo_question: Optional[str] = No
         if re.search(pat, norm):
             return "DISAGREEMENT"
 
-    # 9. Answer to previous Mizo question
+    # 14. Answer to previous Mizo question
     if prev_mizo_question and prev_mizo_question.strip():
         return "ANSWER"
 
     return "CASUAL_CONVERSATION"
+
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +304,30 @@ KNOWN_TOPIC_DOMAINS = {
             "Mizo robot": ["mizo", "robot", "esp32", "hardware", "microcontroller"],
             "Artificial Intelligence": ["ai", "machine learning", "neural network", "deep learning", "llm"]
         },
-        "general_keywords": ["robotics", "engineering", "sensors", "electronics", "motor"]
+        "general_keywords": ["robotics", "sensors", "electronics", "motor"]
+    },
+    "physics_and_engineering": {
+        "subtopics": {
+            "Kinematics": [
+                "kinematics", "forward kinematics", "inverse kinematics", "degrees of freedom",
+                "end-effector", "joint angles", "jacobian", "motion planning", "singularity", "rigid body motion"
+            ],
+            "Dynamics": [
+                "dynamics", "newton euler", "lagrangian dynamics", "torque", "forces", "inertia"
+            ],
+            "Mechanics": [
+                "mechanics", "velocity", "acceleration", "gravity", "momentum", "friction"
+            ]
+        },
+        "general_keywords": ["kinematics", "physics", "mechanics", "engineering", "motion", "joints"]
+    },
+    "learner_projects": {
+        "subtopics": {
+            "Projects": [
+                "project", "projects", "my project", "my projects", "what are my projects", "esp32 robot"
+            ]
+        },
+        "general_keywords": ["project", "projects", "portfolio", "coursework"]
     },
     "english_learning": {
         "subtopics": {
@@ -269,45 +347,76 @@ def extract_topic_and_entities(
 ) -> Tuple[str, str, List[str]]:
     """
     Extracts or maintains topic, subtopic, and entities from user utterance.
-    Ensures that current topic continues naturally unless explicit topic change occurs.
+    - Explicit requests (e.g. kinematics, projects) switch topics immediately.
+    - Previous topics (e.g. One Piece) do not persist into unrelated new questions.
+    - Ambiguous 'move on' or courtesy phrases ('thank you') do not keep the old topic locked.
     """
     clean_lower = text.lower().strip()
     entities = list(current_entities or [])
 
-    # Initialize with current topic state
-    detected_topic = current_topic
-    detected_subtopic = current_subtopic
-
-    # Check if user explicitly changes topic
-    is_topic_change = any(re.search(pat, clean_lower) for pat in TOPIC_CHANGE_PATTERNS)
+    # Check for ambiguous 'move on' or explicit topic change request
+    is_move_on = any(re.search(pat, clean_lower) for pat in MOVE_ON_PATTERNS)
+    is_topic_change = is_move_on or any(re.search(pat, clean_lower) for pat in TOPIC_CHANGE_PATTERNS)
     if is_topic_change:
-        detected_topic = ""
-        detected_subtopic = ""
-        entities = []
+        return "", "", []
 
-    # Check for known domains
+    # Check for standalone courtesy (e.g. "Thank you", "Thanks")
+    is_courtesy = any(re.search(pat, clean_lower) for pat in COURTESY_PATTERNS)
+    if is_courtesy:
+        # Courtesies do not force or revive an old topic
+        return "", "", []
+
+    # Check for "teach me", "continue", "go on", "tell me more"
+    is_teach = any(re.search(pat, clean_lower) for pat in TEACH_REQUEST_PATTERNS)
+    is_continue = any(p in clean_lower for p in ["continue", "go on", "keep going", "next step", "whats next", "what's next", "step 2", "more details", "tell me more", "explain more", "teach me more"])
+    if is_teach or is_continue:
+        # If the preceding subtopic was an academic/educational topic, preserve it for continued teaching!
+        if current_subtopic and any(k in current_subtopic.lower() for k in ["kinematics", "dynamics", "mechanics", "robot", "physics", "engineering", "ai", "artificial intelligence", "grammar", "speaking"]):
+            return current_topic, current_subtopic, entities
+        if is_teach:
+            # If previous topic was anime or entertainment, clear it so tutor can ask for a subject
+            return "", "", []
+
+    # Check for explicit match in known domains
+    matched_domain = ""
+    matched_subtopic = ""
+    matched_entity = ""
+
     for top, data in KNOWN_TOPIC_DOMAINS.items():
         subtopics = data.get("subtopics", {})
         for sub, kws in subtopics.items():
             for kw in kws:
                 if re.search(r"\b" + re.escape(kw) + r"\b", clean_lower):
-                    detected_topic = top
-                    detected_subtopic = sub
-                    # Add recognized named entity
-                    kw_title = " ".join(w.capitalize() for w in kw.split())
-                    if kw_title not in entities:
-                        entities.append(kw_title)
+                    matched_domain = top
+                    matched_subtopic = sub
+                    matched_entity = " ".join(w.capitalize() for w in kw.split())
                     break
-        if detected_topic == top:
+            if matched_domain:
+                break
+        if matched_domain:
             break
 
-    # If already in a topic (e.g. One Piece) and user mentions a character or detail
+    if matched_domain:
+        # Switching domain or establishing domain
+        if matched_domain != current_topic:
+            # Complete domain switch: discard old entities!
+            entities = [matched_entity] if matched_entity else []
+        else:
+            if matched_entity and matched_entity not in entities:
+                entities.append(matched_entity)
+        detected_topic = matched_domain
+        detected_subtopic = matched_subtopic
+    else:
+        detected_topic = current_topic
+        detected_subtopic = current_subtopic
+
+    # If within One Piece discussion, extract characters/crew
     if detected_subtopic == "One Piece":
         one_piece_entities = {
             "zoro": "Zoro", "luffy": "Luffy", "jinbe": "Jinbe", "nami": "Nami",
             "sanji": "Sanji", "chopper": "Chopper", "straw hat pirates": "Straw Hat Pirates",
             "straw hats": "Straw Hat Pirates", "straw hat": "Straw Hat Pirates",
-            "crew": "Straw Hat Pirates"
+            "crew": "Straw Hat Pirates", "crew members": "Straw Hat Pirates"
         }
         for k, v in one_piece_entities.items():
             if re.search(r"\b" + re.escape(k) + r"\b", clean_lower):
@@ -316,7 +425,6 @@ def extract_topic_and_entities(
         if "Straw Hat" in entities and "Straw Hat Pirates" in entities:
             entities.remove("Straw Hat")
 
-    # Cooking entities
     if detected_topic == "cooking":
         cooking_entities = {
             "chicken breast": "Chicken Breast", "vegetables": "Vegetables",
@@ -327,10 +435,15 @@ def extract_topic_and_entities(
                 if v not in entities:
                     entities.append(v)
 
-    # Limit entities list to recent 6 items
-    entities = entities[-6:]
+    # If the user asks a completely unrelated question without matching keywords
+    # and the previous topic was anime, don't force One Piece if it's an explicit general/technical question
+    if current_subtopic == "One Piece" and not matched_domain:
+        unrelated_question = any(q in clean_lower for q in ["what are my", "tell me about", "explain", "how do", "what is", "why is"])
+        if unrelated_question:
+            return "", "", []
 
-    return detected_topic, detected_subtopic, entities
+    return detected_topic, detected_subtopic, entities[-6:]
+
 
 
 def update_conversation_topic_state(
@@ -385,6 +498,18 @@ def update_conversation_topic_state(
                 update_student(student_id, {"durable_memories": durs})
                 logger.info(f"[DURABLE_MEMORY] Saved durable fact: {val} for student {student_id}")
 
+        # Also persist to memories table
+        try:
+            from app.db.database import save_durable_memory
+            save_durable_memory(
+                student_id=student_id,
+                memory_text=f"{key}: {val}" if cat == "favorite_things" else val,
+                category=cat,
+                session_id=session_id
+            )
+        except Exception as me:
+            logger.debug(f"Failed to persist to memories table: {me}")
+
     context_updates = {
         "current_topic": new_topic,
         "current_subtopic": new_subtopic,
@@ -413,47 +538,90 @@ def update_conversation_topic_state(
 def filter_relevant_memories(
     student: Dict[str, Any],
     current_topic: str,
-    current_subtopic: str = ""
+    current_subtopic: str = "",
+    user_message: str = ""
 ) -> Dict[str, Any]:
     """
-    Retrieves only durable memories relevant to the current conversation topic.
+    Retrieves only durable memories relevant to the current conversation topic and user request.
     CRITICAL: Current conversation topic takes absolute priority over unrelated
-    long-term profile interests (e.g. if topic is One Piece, robotics/ESP32 is excluded).
+    long-term profile interests (e.g. if topic is One Piece, robotics/ESP32 is excluded;
+    if user asks about kinematics or projects, One Piece anime is excluded).
     """
     topic_clean = (current_topic or "").lower()
     subtopic_clean = (current_subtopic or "").lower()
+    msg_clean = (user_message or "").lower()
 
     fav_things = student.get("favorite_things", {}) or {}
-    durable_mems = student.get("durable_memories", []) or []
+    all_durable_mems = student.get("durable_memories", []) or []
 
-    relevant_favorites = {}
-    relevant_interests = []
+    relevant_favorites: Dict[str, Any] = {}
+    relevant_interests: List[str] = []
+    relevant_durable_memories: List[str] = []
 
-    # If anime or One Piece
-    if "anime" in topic_clean or "one piece" in subtopic_clean or "one piece" in topic_clean:
+    # Check if request or current topic is technical / robotics / kinematics / projects / engineering
+    is_technical = (
+        "robotics" in topic_clean or "ai" in topic_clean or "physics" in topic_clean or
+        "engineering" in topic_clean or "control" in topic_clean or "science" in topic_clean or
+        "kinematics" in subtopic_clean or "kinematics" in topic_clean or "learner_projects" in topic_clean or
+        "projects" in subtopic_clean or "control" in subtopic_clean or
+        any(k in msg_clean for k in ["kinematics", "robot", "robotics", "project", "projects", "physics", "engineering", "esp32", "course", "pid", "controller", "dynamics", "mechanics"])
+    )
+
+    # Check if request or current topic is anime
+    is_anime = not is_technical and (
+        "anime" in topic_clean or "one piece" in subtopic_clean or "one piece" in topic_clean or
+        any(k in msg_clean for k in ["anime", "one piece", "luffy", "zoro", "manga", "straw hat", "straw hats"])
+    )
+
+    # Check if cooking
+    is_cooking = not is_technical and not is_anime and (
+        "cooking" in topic_clean or "food" in topic_clean or
+        any(k in msg_clean for k in ["cook", "cooking", "recipe", "ingredients", "dinner", "lunch"])
+    )
+
+    if is_technical:
+        # Technical topics: include robotics hobby, exclude anime character favorites!
+        if "favorite_hobby" in fav_things:
+            relevant_favorites["favorite_hobby"] = fav_things["favorite_hobby"]
+        all_interests = student.get("interests", "") or ""
+        relevant_interests = [i.strip() for i in all_interests.split(",") if any(k in i.lower() for k in ["robot", "ai", "tech", "science", "engineering"])]
+        if not relevant_interests:
+            relevant_interests = ["Robotics", "Engineering"]
+
+        # Only inject relevant technical / project memories
+        for m in all_durable_mems:
+            m_low = str(m).lower()
+            if any(k in m_low for k in ["robot", "esp32", "project", "engineering", "kinematics", "study"]):
+                relevant_durable_memories.append(m)
+
+    elif is_anime:
+        # Anime topics: include anime character/anime favorites, exclude robotics/ESP32!
         if "favorite_character" in fav_things:
             relevant_favorites["favorite_character"] = fav_things["favorite_character"]
         if "favorite_anime" in fav_things:
             relevant_favorites["favorite_anime"] = fav_things["favorite_anime"]
         relevant_interests = ["Anime", "Storytelling"]
 
-    # If robotics or tech
-    elif "robotics" in topic_clean or "ai" in topic_clean or "robot" in subtopic_clean:
-        if "favorite_hobby" in fav_things:
-            relevant_favorites["favorite_hobby"] = fav_things["favorite_hobby"]
-        all_interests = student.get("interests", "")
-        relevant_interests = [i.strip() for i in all_interests.split(",") if any(k in i.lower() for k in ["robot", "ai", "tech", "science"])]
+        for m in all_durable_mems:
+            m_low = str(m).lower()
+            if any(k in m_low for k in ["anime", "one piece", "manga", "zoro", "luffy"]):
+                relevant_durable_memories.append(m)
 
-    # If cooking or food
-    elif "cooking" in topic_clean or "food" in topic_clean:
+    elif is_cooking:
         if "favorite_food" in fav_things:
             relevant_favorites["favorite_food"] = fav_things["favorite_food"]
         relevant_interests = ["Cooking", "Food"]
 
+        for m in all_durable_mems:
+            m_low = str(m).lower()
+            if any(k in m_low for k in ["cook", "food", "recipe", "kitchen"]):
+                relevant_durable_memories.append(m)
+
     else:
-        # Default/unspecified topic: pass general favorites if any
+        # General/unspecified topic: pass general favorites if any
         relevant_favorites = fav_things
         relevant_interests = [i.strip() for i in (student.get("interests") or "").split(",") if i.strip()]
+        relevant_durable_memories = all_durable_mems[:5]
 
     return {
         "student_name": student.get("name", "Student"),
@@ -462,5 +630,6 @@ def filter_relevant_memories(
         "current_teaching_difficulty": student.get("current_teaching_difficulty", 1),
         "relevant_favorites": relevant_favorites,
         "relevant_interests": relevant_interests,
-        "durable_memories": durable_mems
+        "durable_memories": relevant_durable_memories
     }
+
